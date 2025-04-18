@@ -17,20 +17,23 @@ void forward_kernel(const float* Q, const float* K, const float* V, const int N,
     extern __shared__ float sram[];
     int tile_size = Bc * d;  // size of Qi, Kj, Vj
     float* Qi = sram;
-    float* Kj = &sram[tile_size];
-    float* Vj = &sram[tile_size * 2];
-    float* S = &sram[tile_size * 3];
+    float* Kj = &sram[tile_size];     // [tile_size]
+    float* Vj = &sram[tile_size * 2]; // [tile_size]
+    float* S = &sram[tile_size * 3];  // [tile_size]
 
-    for (int j = 0; j < Tc; j++) {
+    for (int j = 0; j < Tc; j++) { // j tile
 
         // Load Kj, Vj to SRAM
         for (int x = 0; x < d; x++) {
+            // K_jx
+            // true jj = (Bc*d*j) + (tx * d)
             Kj[(tx * d) + x] = K[qkv_offset + (tile_size * j) + (tx * d) + x];
             Vj[(tx * d) + x] = V[qkv_offset + (tile_size * j) + (tx * d) + x];
         }
         __syncthreads();  // such that the inner loop can use the correct Kj, Vj
 
-        for (int i = 0; i < Tr; i++)  {
+        for (int i = 0; i < Tr; i++)  { // i tile
+            // true ii = (Br*d*i) + (tx * d)
 
             // Load Qi to SRAM, l and m to registers
             for (int x = 0; x < d; x++) {
@@ -74,8 +77,8 @@ void forward_kernel(const float* Q, const float* K, const float* V, const int N,
                     * ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + (tile_size * i) + (tx * d) + x]) \
                     + (__expf(row_m - row_m_new) * pv));
             }
-            m[lm_offset + (Br * i) + tx] = row_m_new;
-            l[lm_offset + (Br * i) + tx] = row_l_new;
+            m[lm_offset + (Bc * i) + tx] = row_m_new;
+            l[lm_offset + (Bc * i) + tx] = row_l_new;
         }
         __syncthreads();  // otherwise, thread can use the wrong Kj, Vj in inner loop
     }
@@ -85,8 +88,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
     // TODO: determine Bc, Br dynamically
     const int Bc = 32; const int Br = 32;
 
-    const int B = Q.size(0); const int nh = Q.size(1);
-    const int N = Q.size(2); const int d = Q.size(3);
+    const int B = Q.size(0); // batch size
+    const int nh = Q.size(1); // number of heads
+    const int N = Q.size(2); // sequence length
+    const int d = Q.size(3); // head dimension
 
     const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
     const float softmax_scale = 1.0 / sqrt(d);
