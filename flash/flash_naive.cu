@@ -2,10 +2,12 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+namespace flash {
+
 __global__
-void forward_kernel(const float* Q, const float* K, const float* V, const int N, const int d,
-                    const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
-                    float* l, float *m, float* O) {
+void naive_forward_kernel(const float* Q, const float* K, const float* V, const int N, const int d,
+                          const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
+                          float* l, float *m, float* O) {
     int tx = threadIdx.x;
     int bx = blockIdx.x; int by = blockIdx.y;  // batch and head index
 
@@ -84,38 +86,40 @@ void forward_kernel(const float* Q, const float* K, const float* V, const int N,
     }
 }
 
-torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
-    // TODO: determine Bc, Br dynamically
-    const int Bc = 32; const int Br = 32;
+// torch::Tensor naive_forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
+//     // TODO: determine Bc, Br dynamically
+//     const int Bc = 32; const int Br = 32;
 
-    const int B = Q.size(0); // batch size
-    const int nh = Q.size(1); // number of heads
-    const int N = Q.size(2); // sequence length
-    const int d = Q.size(3); // head dimension
+//     const int B = Q.size(0); // batch size
+//     const int nh = Q.size(1); // number of heads
+//     const int N = Q.size(2); // sequence length
+//     const int d = Q.size(3); // head dimension
 
-    const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
-    const float softmax_scale = 1.0 / sqrt(d);
+//     const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
+//     const float softmax_scale = 1.0 / sqrt(d);
 
-    // Initialize O, l, m to HBM
-    auto O = torch::zeros_like(Q);
-    auto l = torch::zeros({B, nh, N});
-    auto m = torch::full({B, nh, N}, -INFINITY);
-    torch::Device device(torch::kCUDA);
-    l = l.to(device); m = m.to(device);
+//     // Initialize O, l, m to HBM
+//     auto O = torch::zeros_like(Q);
+//     auto l = torch::zeros({B, nh, N});
+//     auto m = torch::full({B, nh, N}, -INFINITY);
+//     torch::Device device(torch::kCUDA);
+//     l = l.to(device); m = m.to(device);
 
-    // Calculate SRAM size needed per block
-    const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
-    int max_sram_size;
-    cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-    printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
+//     // Calculate SRAM size needed per block
+//     const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+//     int max_sram_size;
+//     cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+//     printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
 
-    dim3 grid_dim(B, nh);  // batch_size x num_heads
-    dim3 block_dim(Bc);  // Bc threads per block
+//     dim3 grid_dim(B, nh);  // batch_size x num_heads
+//     dim3 block_dim(Bc);  // Bc threads per block
 
-    forward_kernel<<<grid_dim, block_dim, sram_size>>>(
-        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-        N, d, Tc, Tr, Bc, Br, softmax_scale,
-        l.data_ptr<float>(), m.data_ptr<float>(), O.data_ptr<float>()
-    );
-    return O;
+//     naive_forward_kernel<<<grid_dim, block_dim, sram_size>>>(
+//         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
+//         N, d, Tc, Tr, Bc, Br, softmax_scale,
+//         l.data_ptr<float>(), m.data_ptr<float>(), O.data_ptr<float>()
+//     );
+//     return O;
+// }
+
 }

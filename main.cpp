@@ -1,4 +1,5 @@
-#include <torch/extension.h>
+#include <torch/torch.h>
+#include "flash/launch.hpp"
 
 torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v);
 torch::Tensor forward_opt(torch::Tensor q, torch::Tensor k, torch::Tensor v);
