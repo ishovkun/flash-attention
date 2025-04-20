@@ -24,12 +24,24 @@ void forward_kernel_2d(float const * __restrict__ Q,
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                       KernelType kernel_type) {
   // TODO: determine Bc, Br dynamically
-  const int Bc = 32; const int Br = 32;
+  // const int Bc = 32; const int Br = 32;
 
   const int B = Q.size(0); // batch size
   const int nh = Q.size(1); // number of heads
   const int N = Q.size(2); // sequence length
   const int d = Q.size(3); // head dimension
+
+  /*
+   * sh_size //
+   * sh_size = 3*Bc*d + (Bc*Br)
+   * Assume Bc = Br = T (tile_size)
+   * x = (sqrt(9*d*d + 4*m) - 3*d)/2
+  */
+  // auto tileSize = getTileSize(d);
+  // std::cout << "Tile size: " << tileSize << std::endl;
+  // auto const Bc = tileSize; auto const Br = tileSize;
+
+  auto const Bc = 32; auto const Br = 32;
 
   const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
   const float softmax_scale = 1.0 / sqrt(d);
@@ -43,9 +55,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
 
   // Calculate SRAM size needed per block
   const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
-  int max_sram_size;
-  cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-  printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
+  checkRequestedSharedMemory(sram_size);
 
   dim3 grid_dim(B, nh);  // batch_size x num_heads
   dim3 block_dim(Bc);  // Bc threads per block
