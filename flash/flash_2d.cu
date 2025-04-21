@@ -23,95 +23,6 @@ __device__ float warpReduce(float value) {
   return __shfl_sync(UINT32_MAX, value, 0);
 }
 
-// __global__
-// void forward_kernel2(const float* Q, const float* K, const float* V, const int N, const int d,
-//                     const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
-//                     float* l, float *m, float* O)
-// {
-//     int tid = threadIdx.x;
-//     int bx = blockIdx.x; int by = blockIdx.y;  // batch and head index
-
-//     // Offset into Q,K,V,O,l,m - different for each batch and head
-//     int qkv_offset = (bx * gridDim.y * N * d) + (by * N * d);  // gridDim.y = nh
-//     int lm_offset = (bx * gridDim.y * N) + (by * N);  // offset for l and m
-
-//     // Define SRAM for Q,K,V,S
-//     extern __shared__ float sram[];
-//     float* Qi = sram;  // size = Br x d
-//     float* Kj = &sram[Br*d];     // size = Bc x d
-//     float* Vj = &sram[d*(Bc+Br)]; // size = Bc x d
-//     float* S = &sram[d*(Br+2*Bc)];  // size = Br x Bc
-
-//     for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
-
-//       // load Kj, Vj
-//       for (int jj = 0; jj < Bc; jj++) {
-//         auto j = jStart + jj;
-//         for (int kStart = 0; kStart < d; kStart += blockDim.x) {
-//           auto k = kStart + tid;
-//           Kj[jj*d + k] = K[qkv_offset +  j*d + k];
-//           Vj[jj*d + k] = V[qkv_offset +  j*d + k];
-//         }
-//       }
-
-//       for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
-
-//         // Load Qi
-//         for (int ii = 0; ii < Br; ii++) {
-//           auto i = iStart + ii;
-//           for (int kStart = 0; kStart < d; kStart += blockDim.x) {
-//             auto k = kStart + tid;
-//             Qi[ii*d + k] = Q[qkv_offset + i*d + k];
-//           }
-//         }
-//         __syncthreads();
-
-//         // ------------- parallelize over i now  ---------------
-//         int ii = tid;
-//         int i = iStart + ii;
-
-//         // Compute product Sij = Qi * Kj
-//         // Specifically, Sij = \sum_x (Qix * Kjx)
-//         float row_m_prev = m[lm_offset + i];
-//         float row_l_prev = l[lm_offset + i];
-
-//         float row_m = -INFINITY;
-//         for (int jj = 0; jj < Bc; jj++) {
-//           float Sij = 0.f;
-//           for (int k = 0; k < d; k++) {
-//             Sij += Qi[ii*d + k] * Kj[jj*d + k];
-//           }
-//           Sij *= softmax_scale;
-//           S[Bc*ii + jj] = Sij;
-//           row_m = float_max(row_m, Sij);
-//         }
-//         __syncthreads();
-
-//         float row_l = 0;
-//         for (int y = 0; y < Bc; y++) {
-//           S[Bc*ii + y] = __expf(S[Bc*ii + y] - row_m);
-//           row_l += S[(Bc * tid) + y];
-//         }
-//         // Compute new m and l
-//         float row_m_new = max(row_m_prev, row_m);
-//         float row_l_new = (__expf(row_m_prev - row_m_new) * row_l_prev) + (__expf(row_m - row_m_new) * row_l);
-
-//         // Write O, l, m to HBM
-//         for (int x = 0; x < d; x++) {
-//           float PiyVyx = 0.f;
-//           for (int y = 0; y < Bc; y++) {
-//             PiyVyx += S[Bc*ii + y] * Vj[y*d + x];
-//           }
-//           O[qkv_offset + i*d + x] = ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + i*d + x])  +
-//                                      (__expf(row_m - row_m_new) * PiyVyx)) / row_l_new;
-//         }
-//         m[lm_offset + i] = row_m_new;
-//         l[lm_offset + i] = row_l_new;
-//       }
-//       __syncthreads();
-//     }
-// }
-
 __global__
 void forward_kernel_2d(float const * __restrict__ Q,
                        float const * __restrict__ K,
@@ -141,50 +52,52 @@ void forward_kernel_2d(float const * __restrict__ Q,
 
   for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
     // load Kj, Vj
-    for (int kStart = 0; kStart < d; kStart += blockDim.x) {
-      auto k = kStart + tx;
+    for (int k = tx; k < d; k += blockDim.x) {
       auto jj = ty;
       auto j = jStart + jj;
-      Kj[jj*d + k] = (j < N) ? K[qkv_offset +  j*d + k] : 0.f;
-      Vj[jj*d + k] = (j < N) ? V[qkv_offset +  j*d + k] : 0.f;
+      auto inBounds = j < N;
+      Kj[jj*d + k] = inBounds ? K[qkv_offset +  j*d + k] : 0.f;
+      Vj[jj*d + k] = inBounds ? V[qkv_offset +  j*d + k] : 0.f;
     }
+    // __syncthreads();
 
     for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
+      // Bc might be smaller in the last tile cause N does not necessarily divide by Bc
+      // then the local size of Bc must change to prevent index errors
+      int const Bc_cur = min(Bc, N - iStart);
       // Load Qi
       auto ii = ty;
       auto i = iStart + ii;
-      for (int kStart = 0; kStart < d; kStart += blockDim.x) {
-        auto k = kStart + tx;
-        Qi[ii*d + k] = (i < N) ? Q[qkv_offset + i*d + k] : 0.f;
-      }
-      // __syncthreads(); -- not needed
+      for (int k = tx; k < d; k += blockDim.x)
+          Qi[ii*d + k] = (i < N) ? Q[qkv_offset + i*d + k] : 0.f;
+      // __syncthreads();// -- not needed
 
+      // Compute Sij and row_max
       float row_m = -INFINITY;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
+      for (int jj = tx; jj < Bc_cur; jj += blockDim.x) {
         float Sij = 0.f;
         for (int k = 0; k < d; k++) {
           Sij += Qi[ii*d + k] * Kj[jj*d + k];
         }
         Sij *= softmax_scale;
-        S[Bc*ii + jj] = Sij;
+        S[Bc_cur*ii + jj] = Sij;
         row_m = float_max(row_m, Sij);
       }
       row_m = warpReduce<float_max>(row_m);
 
       // S = [Br x Bc]
       float row_l = 0.f;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        float Sij = __expf(S[Bc*ii + jj] - row_m);
-        S[Bc*ii + jj] = Sij;
+      for (int jj = tx; jj < Bc_cur; jj += blockDim.x) {
+        float Sij = __expf(S[Bc_cur*ii + jj] - row_m);
+        S[Bc_cur*ii + jj] = Sij;
         row_l += Sij;
       }
       row_l = warpReduce<float_add>(row_l);
 
-      float row_m_prev = m[lm_offset + i];
-      float row_l_prev = l[lm_offset + i];
+      float row_m_prev = (i < N) ? m[lm_offset + i] : -INFINITY;
+      float row_l_prev = (i < N) ? l[lm_offset + i] : 0.f;
       float row_m_new = float_max(row_m_prev, row_m);
-      float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
-                        __expf(row_m - row_m_new) * row_l;
+      float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev + __expf(row_m - row_m_new) * row_l;
 
       // __syncthreads(); -- no need <= there is only one warp in j direction
 
@@ -192,15 +105,15 @@ void forward_kernel_2d(float const * __restrict__ Q,
       // O[Br,d] = S[Br, Bc] * V[Bc, d]
       for (int k = tx; k < d; k += blockDim.x) {
         float PinVnk = 0.f;
-        for (int n = 0; n < Bc; n++) {
-          PinVnk += S[Bc*ii + n] * Vj[n*d + k];
+        for (int n = 0; n < Bc_cur; n++) {
+          PinVnk += S[Bc_cur*ii + n] * Vj[n*d + k];
         }
         if (i < N)
           O[qkv_offset + i*d + k] = ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + i*d + k])  +
                                      (__expf(row_m - row_m_new) * PinVnk)) / row_l_new;
       }
       // save new l and m
-      if (tx == 0) {
+      if (tx == 0 && i < N) {
         m[lm_offset + i] = row_m_new;
         l[lm_offset + i] = row_l_new;
       }

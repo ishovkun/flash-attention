@@ -1,3 +1,5 @@
+#include <climits>
+#include <cmath>
 #include <torch/types.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -29,30 +31,31 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
         for (int x = 0; x < d; x++) {
             // K_jx
             // true jj = (Bc*d*j) + (tx * d)
-            Kj[(tx * d) + x] = K[qkv_offset + (tile_size * j) + (tx * d) + x];
-            Vj[(tx * d) + x] = V[qkv_offset + (tile_size * j) + (tx * d) + x];
+            Kj[(tx * d) + x] = (j*Bc + tx < N) ? K[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
+            Vj[(tx * d) + x] = (j*Bc + tx < N) ? V[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
         }
         __syncthreads();  // such that the inner loop can use the correct Kj, Vj
 
         for (int i = 0; i < Tr; i++)  { // i tile
             // true ii = (Br*d*i) + (tx * d)
+            int const Bcc = i*Bc + Bc-1 < N ? Bc : N - i*Bc;
 
             // Load Qi to SRAM, l and m to registers
             for (int x = 0; x < d; x++) {
-                Qi[(tx * d) + x] = Q[qkv_offset + (tile_size * i) + (tx * d) + x];
+                Qi[(tx * d) + x] = (i*Br + tx < N) ? Q[qkv_offset + (tile_size * i) + (tx * d) + x] : 0.f;
             }
-            float row_m_prev = m[lm_offset + (Br * i) + tx];
-            float row_l_prev = l[lm_offset + (Br * i) + tx];
+            float row_m_prev = (Br*i + tx < N) ? m[lm_offset + (Br * i) + tx] : -INFINITY;
+            float row_l_prev = (Br*i + tx < N) ? l[lm_offset + (Br * i) + tx] : 0.f;
 
             // S = QK^T, row_m = rowmax(S)
             float row_m = -INFINITY;
-            for (int y = 0; y < Bc; y++) {
+            for (int y = 0; y < Bcc; y++) {
                 float sum = 0;
                 for (int x = 0; x < d; x++) {
                     sum += Qi[(tx * d) + x] * Kj[(y * d) + x];
                 }
                 sum *= softmax_scale;
-                S[(Bc * tx) + y] = sum;
+                S[(Bcc * tx) + y] = sum;
 
                 if (sum > row_m)
                     row_m = sum;
@@ -60,9 +63,9 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
 
             // P = exp(S - row_m), row_l = rowsum(P)
             float row_l = 0;
-            for (int y = 0; y < Bc; y++) {
-                S[(Bc * tx) + y] = __expf(S[(Bc * tx) + y] - row_m);
-                row_l += S[(Bc * tx) + y];
+            for (int y = 0; y < Bcc; y++) {
+                S[(Bcc * tx) + y] = __expf(S[(Bcc * tx) + y] - row_m);
+                row_l += S[(Bcc * tx) + y];
             }
 
             // Compute new m and l
@@ -72,15 +75,18 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
             // Write O, l, m to HBM
             for (int x = 0; x < d; x++) {
                 float pv = 0;  // Pij * Vj
-                for (int y = 0; y < Bc; y++) {
-                    pv += S[(Bc * tx) + y] * Vj[(y * d) + x];
+                for (int y = 0; y < Bcc; y++) {
+                    pv += S[(Bcc * tx) + y] * Vj[(y * d) + x];
                 }
-                O[qkv_offset + (tile_size * i) + (tx * d) + x] = (1 / row_l_new) \
-                    * ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + (tile_size * i) + (tx * d) + x]) \
-                    + (__expf(row_m - row_m_new) * pv));
+                if (i*Br + tx < N)
+                  O[qkv_offset + (tile_size * i) + (tx * d) + x] = (1 / row_l_new) \
+                      * ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + (tile_size * i) + (tx * d) + x]) \
+                      + (__expf(row_m - row_m_new) * pv));
             }
-            m[lm_offset + (Bc * i) + tx] = row_m_new;
-            l[lm_offset + (Bc * i) + tx] = row_l_new;
+            if (i*Br + tx < N) {
+              m[lm_offset + (Bc * i) + tx] = row_m_new;
+              l[lm_offset + (Bc * i) + tx] = row_l_new;
+            }
         }
         __syncthreads();  // otherwise, thread can use the wrong Kj, Vj in inner loop
     }

@@ -33,11 +33,29 @@ auto generate_data(auto const & p) {
 
 bool run_and_compare(auto test_name, auto reference, double atol, double rtol, auto && kernel) {
   auto result = kernel();
-  bool test_result = torch::allclose(reference, result, atol, rtol);
+  bool test_result = torch::allclose(result, reference, atol, rtol);
+  // std::cout << "Reference: " << reference << std::endl;
+  // std::cout << "Result: " << result << std::endl;
   if (!test_result) {
     std::cout << test_name << ": Test failed [☓ ]" << std::endl;
     // std::cout << "Reference: " << reference << std::endl;
     // std::cout << "Result: " << result << std::endl;
+    int mismatch_count = 0;
+    for (int b = 0; b < result.size(0); b++) {
+      for (int h = 0; h < result.size(1); h++) {
+        for (int n = 0; n < result.size(2); n++) {
+          for (int d = 0; d < result.size(3); d++) {
+            auto ref = reference[b][h][n][d].template item<float>();
+            auto res = result[b][h][n][d].template item<float>();
+            if (std::fabs(res - ref) > atol + rtol * std::fabs(ref) || std::isnan(res)) {
+              std::cout << "Mismatch[" << b << "," << h << "," << n << "," << d << "] = "
+                        << "ref = " << ref << ", res = " << res << std::endl;
+              if (mismatch_count++ > 10) return false;
+            }
+          }
+        }
+      }
+    }
   }
   else {
     std::cout << test_name << ": Test passed [✓ ]" << std::endl;
@@ -54,14 +72,15 @@ auto main() -> int {
   //   .head_embd = 32,
   // };
   AttentionParameters params{
-    .batch_size = 64,
-    .num_heads = 16,
-    .seq_len = 512,
-    .head_embd = 64,
+    .batch_size = 1,
+    .num_heads = 20,
+    .seq_len = 30,
+    .head_embd = 60,
   };
 
   auto [q, k, v] = generate_data(params);
   auto manual_result = manual_attn(q, k, v);
+  // std::cout << "Reference: " << manual_result << std::endl;
 
   double atol = 1e-4;
   double rtol = 1e-2;
