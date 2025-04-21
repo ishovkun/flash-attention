@@ -1,0 +1,31 @@
+// Static tasks configuration.
+//
+// Example:
+[
+    {
+        "label": "[cmake] Flash Attention",
+        "command": "mkdir -p build && cd build && cmake .. -DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch",
+        "env": { "foo": "bar" },
+        "cwd": "$ZED_WORKTREE_ROOT",
+        "use_new_terminal": false,
+        "allow_concurrent_runs": false,
+        "reveal": "no_focus",
+        "reveal_target": "dock",
+        "hide": "never",
+        "shell": "system",
+        "tags": []
+    },
+    {
+        "label": "[compile] Flash Attention",
+        "command": "make -j8",
+        "env": { "foo": "bar" },
+        "cwd": "$ZED_WORKTREE_ROOT/build",
+        "use_new_terminal": false,
+        "allow_concurrent_runs": false,
+        "reveal": "no_focus",
+        "reveal_target": "dock",
+        "hide": "never",
+        "shell": "system",
+        "tags": []
+    }
+]
