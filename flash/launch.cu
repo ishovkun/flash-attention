@@ -1,6 +1,5 @@
 #include "launch.hpp"
-
-
+#include <iostream>
 
 namespace flash {
 
@@ -8,6 +7,23 @@ __global__
 void naive_forward_kernel(const float* Q, const float* K, const float* V, const int N, const int d,
                           const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
                           float* l, float *m, float* O);
+
+static int getTileSize(int head_dim) {
+  int max_sram_size;
+  cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+  int const c = max_sram_size / sizeof(float);
+  int d = head_dim;
+  const int tileSize = floor((sqrt(9.*d*d + 4.*c) - 3.*d) / 2.);
+  return tileSize;
+}
+
+static void checkRequestedSharedMemory(int requested_shared_memory) {
+  int max_sram_size;
+  cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+  if (requested_shared_memory > max_sram_size) {
+    throw std::runtime_error("Requested shared memory exceeds maximum allowed");
+  }
+}
 
 __global__
 void forward_kernel_2d(float const * __restrict__ Q,
