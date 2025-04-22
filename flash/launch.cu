@@ -63,7 +63,7 @@ static dim3 selectBlockDim(int tileSize, KernelType kernelType) {
   case KernelType::scalar2D:
     return dim3(tileSize, constants::warpSize);
   case KernelType::warp_wmma_sync:
-    return constants::WMMA_M;
+    return constants::warpSize;
   default:
     throw std::invalid_argument("Unsupported kernel type");
   }
@@ -117,8 +117,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   thrust::device_vector<float> m(B * nh * N, -INFINITY);
 
   // Calculate SRAM size needed per block
-  const int sram_size =
-      (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+  const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
   checkRequestedSharedMemory(sram_size);
 
   dim3 gridDim(B, nh); // batch_size x num_heads

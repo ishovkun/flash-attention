@@ -33,5 +33,17 @@
         "hide": "never",
         "shell": "system",
         "tags": []
+    },
+    {
+        "label": "Build and Test Flash Attention",
+        "command": "make -j8 && ./runner",
+        "cwd": "$ZED_WORKTREE_ROOT/build",
+        "use_new_terminal": false,
+        "allow_concurrent_runs": false,
+        "reveal": "no_focus",
+        "reveal_target": "dock",
+        "hide": "never",
+        "shell": "system",
+        "tags": []
     }
 ]

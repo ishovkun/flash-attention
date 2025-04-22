@@ -67,21 +67,20 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
       // S = QK^T - tensor cores going brrr
       using namespace wmma;
-      wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
-                     wmma::precision::tf32, wmma::row_major>
+      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
           q_frag;
-      wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
-                     wmma::precision::tf32, wmma::col_major>
-          k_frag; // note col_major for transpose
-      wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> s_frag;
-      wmma::fill_fragment(s_frag, 0.0f);
+      // note col_major for transpose
+      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, col_major>
+          k_frag;
+      fragment<accumulator, WMMA_M, WMMA_N, WMMA_K, float> s_frag;
+      fill_fragment(s_frag, 0.0f);
 
       for (int k = 0; k < d; k += WMMA_K) {
-        wmma::load_matrix_sync(q_frag, Qi + k, d);
-        wmma::load_matrix_sync(k_frag, Kj + k, d);
-        wmma::mma_sync(s_frag, q_frag, k_frag, s_frag);
+        load_matrix_sync(q_frag, Qi + k, d);
+        load_matrix_sync(k_frag, Kj + k, d);
+        mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
-      wmma::store_matrix_sync(Sij, s_frag, WMMA_M, wmma::mem_row_major);
+      store_matrix_sync(Sij, s_frag, WMMA_M, mem_row_major);
 
       float row_m = -INFINITY;
       float row_l = 0;
@@ -100,13 +99,11 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
       }
 
       // PV = Pij * Vj - tensor cores going brrr again
-      wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
-                     wmma::precision::tf32, wmma::row_major>
+      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
           p_frag;
-      wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
-                     wmma::precision::tf32, wmma::row_major>
+      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
           v_frag;
-      wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> pv_frag;
+      fragment<accumulator, WMMA_M, WMMA_N, WMMA_K, float> pv_frag;
 
       for (int x = 0; x < d; x += WMMA_M) {
         wmma::fill_fragment(pv_frag, 0.0f);
