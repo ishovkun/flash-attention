@@ -10,6 +10,13 @@ __global__ void naive_forward_kernel(const float *Q, const float *K,
                                      float *l, float *m, float *O);
 
 static int getTileSize(int head_dim) {
+  /*
+   * We compute the tile size assuming the maximum use of shared memory.
+   * This is done by solving a quadratic equation:
+   * sh_size = 3*Bc*d + (Bc*Br) -> solve for Bc
+   * Assume Bc = Br = x
+   * x = (sqrt(9*d*d + 4*m) - 3*d)/2
+   */
   int max_sram_size;
   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
   int const c = max_sram_size / sizeof(float);
@@ -54,20 +61,11 @@ static inline void gpuAssert(cudaError_t code, const char *file, int line,
 
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                       KernelType kernel_type) {
-  // TODO: determine Bc, Br dynamically
-  // const int Bc = 32; const int Br = 32;
-
   const int B = Q.size(0);  // batch size
   const int nh = Q.size(1); // number of heads
   const int N = Q.size(2);  // sequence length
   const int d = Q.size(3);  // head dimension
 
-  /*
-   * sh_size //
-   * sh_size = 3*Bc*d + (Bc*Br)
-   * Assume Bc = Br = T (tile_size)
-   * x = (sqrt(9*d*d + 4*m) - 3*d)/2
-   */
   // Compute tile size using maximum shared memory per block
   auto tileSize = getTileSize(d);
   // std::cout << "Tile size: " << tileSize << std::endl;
@@ -121,8 +119,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   case KernelType::scalar2D:
     forward_kernel_2d<<<grid_dim, block_dim, sram_size>>>(
-        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l.data_ptr<float>(), m.data_ptr<float>(),
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d,
+        Bc, Br, softmax_scale, l.data_ptr<float>(), m.data_ptr<float>(),
         O.data_ptr<float>());
     break;
   default:
