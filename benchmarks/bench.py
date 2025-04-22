@@ -37,13 +37,9 @@ def manual_attn(q, k, v):
 
 print('=== profiling manual attention ===')
 
-# # print('=== profiling manual attention ===')
-
-# # with torch.autograd.profiler.profile(use_device='cuda') as prof:
-# #     manual_result = manual_attn(q, k, v)
-# # print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
-
-# # print('=== profiling minimal flash attention === ')
+with torch.autograd.profiler.profile(use_device='cuda') as prof:
+    O = manual_attn(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
 
 print('=== profiling minimal flash attention === ')
 

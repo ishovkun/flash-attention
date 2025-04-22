@@ -70,7 +70,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
    */
   // Compute tile size using maximum shared memory per block
   auto tileSize = getTileSize(d);
-  // tileSize = 52;
   // std::cout << "Tile size: " << tileSize << std::endl;
 
   // Limit tile size since only 1024 threads can be launched per block

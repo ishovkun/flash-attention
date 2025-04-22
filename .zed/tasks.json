@@ -1,10 +1,9 @@
 // Static tasks configuration.
 //
-// Example:
 [
     {
         "label": "[cmake] Flash Attention",
-        "command": "mkdir -p build && cd build && cmake .. -DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch",
+        "command": "mkdir -p build && cd build && cmake .. -DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch -DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc",
         "env": { "foo": "bar" },
         "cwd": "$ZED_WORKTREE_ROOT",
         "use_new_terminal": false,
