@@ -71,6 +71,8 @@ auto main() -> int {
   //   .seq_len = 32,
   //   .head_embd = 32,
   // };
+
+  /* Correctness tests */
   AttentionParameters params{
     .batch_size = 1,
     .num_heads = 20,

@@ -55,9 +55,8 @@ void forward_kernel_2d(float const * __restrict__ Q,
     for (int k = tx; k < d; k += blockDim.x) {
       auto jj = ty;
       auto j = jStart + jj;
-      auto inBounds = j < N;
-      Kj[jj*d + k] = inBounds ? K[qkv_offset +  j*d + k] : 0.f;
-      Vj[jj*d + k] = inBounds ? V[qkv_offset +  j*d + k] : 0.f;
+      Kj[jj*d + k] = (j < N) ? K[qkv_offset +  j*d + k] : 0.f;
+      Vj[jj*d + k] = (j < N) ? V[qkv_offset +  j*d + k] : 0.f;
     }
     // __syncthreads();
 
@@ -65,6 +64,7 @@ void forward_kernel_2d(float const * __restrict__ Q,
       // Bc might be smaller in the last tile cause N does not necessarily divide by Bc
       // then the local size of Bc must change to prevent index errors
       int const Bc_cur = min(Bc, N - iStart);
+
       // Load Qi
       auto ii = ty;
       auto i = iStart + ii;
@@ -83,6 +83,7 @@ void forward_kernel_2d(float const * __restrict__ Q,
         S[Bc_cur*ii + jj] = Sij;
         row_m = float_max(row_m, Sij);
       }
+      // take min over row (j dimention)
       row_m = warpReduce<float_max>(row_m);
 
       // S = [Br x Bc]
@@ -112,6 +113,7 @@ void forward_kernel_2d(float const * __restrict__ Q,
           O[qkv_offset + i*d + k] = ((row_l_prev * __expf(row_m_prev - row_m_new) * O[qkv_offset + i*d + k])  +
                                      (__expf(row_m - row_m_new) * PinVnk)) / row_l_new;
       }
+
       // save new l and m
       if (tx == 0 && i < N) {
         m[lm_offset + i] = row_m_new;
@@ -122,46 +124,5 @@ void forward_kernel_2d(float const * __restrict__ Q,
     __syncthreads();
   }
 }
-
-// torch::Tensor forward_opt(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
-//     // TODO: determine Bc, Br dynamically
-//     const int Bc = 32; const int Br = 32;
-
-//     const int B = Q.size(0); const int nh = Q.size(1);
-//     const int N = Q.size(2); const int d = Q.size(3);
-
-//     const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
-//     const float softmax_scale = 1.0 / sqrt(d);
-
-//     // Initialize O, l, m to HBM
-//     auto O = torch::zeros_like(Q);
-//     auto l = torch::zeros({B, nh, N});
-//     auto m = torch::full({B, nh, N}, -INFINITY);
-//     torch::Device device(torch::kCUDA);
-//     l = l.to(device); m = m.to(device);
-
-//     // Calculate SRAM size needed per block
-//     const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
-//     int max_sram_size;
-//     cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-//     printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
-
-//     dim3 grid_dim(B, nh);  // batch_size x num_heads
-//     constexpr int warpSize = 32;
-//     dim3 block_dim(warpSize, max(Br, Bc));  // Bc threads per block
-//     // dim3 block_dim(max(Br, Bc));  // Bc threads per block
-
-//     forward_kernel_2d<<<grid_dim, block_dim, sram_size>>>(
-//     // forward_kernel2<<<grid_dim, block_dim, sram_size>>>(
-//         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-//         N, d, Tc, Tr, Bc, Br, softmax_scale,
-//         l.data_ptr<float>(), m.data_ptr<float>(), O.data_ptr<float>()
-//     );
-//     cudaDeviceSynchronize();
-//     if (cudaGetLastError() != cudaSuccess) {
-//         printf("CUDA error: %s\n", cudaGetErrorString(cudaGetLastError()));
-//     }
-//     return O;
-// }
 
 }
