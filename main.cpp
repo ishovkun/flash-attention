@@ -1,14 +1,6 @@
 #include <torch/torch.h>
 #include "flash/launch.hpp"
 
-// torch::Tensor forward(torch::Tensor q, torch::Tensor k, torch::Tensor v);
-// torch::Tensor forward_opt(torch::Tensor q, torch::Tensor k, torch::Tensor v);
-
-// PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-//     m.def("forward", torch::wrap_pybind_function(forward), "forward");
-//     m.def("forward_opt", torch::wrap_pybind_function(forward_opt), "forward_opt");
-// }
-
 struct AttentionParameters {
   int batch_size;
   int num_heads;
@@ -75,10 +67,19 @@ auto main() -> int {
   /* Correctness tests */
   AttentionParameters params{
     .batch_size = 1,
-    .num_heads = 20,
-    .seq_len = 30,
-    .head_embd = 60,
+    .num_heads = 1,
+    .seq_len = 32,
+    .head_embd = 64,
   };
+
+  // # GPT2 parameters. Slower if seq_len is too big.
+  // AttentionParameters params{
+  //   .batch_size = 8,
+  //   .num_heads = 12,
+  //   .seq_len = 1024,
+  //   .head_embd = 64,
+  // };
+
 
   auto [q, k, v] = generate_data(params);
   auto manual_result = manual_attn(q, k, v);
@@ -92,6 +93,9 @@ auto main() -> int {
   });
   run_and_compare("Flash 2D", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::scalar2D);
+  });
+  run_and_compare("Flash wmma sync", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
   });
 
   return EXIT_SUCCESS;

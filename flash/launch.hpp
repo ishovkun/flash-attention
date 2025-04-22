@@ -6,6 +6,7 @@ namespace flash {
 enum class KernelType {
   naive1D,
   scalar2D,
+  warp_wmma_sync,
 };
 
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,

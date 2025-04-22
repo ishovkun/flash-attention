@@ -32,10 +32,10 @@ def manual_attn(q, k, v):
     y = att @ v
     return y
 
-# print('=== correctness check ===')
-# manual_result = manual_attn(q, k, v)
-# naive_result = torch.ops.pyflash.naive(q, k, v)
-# scalar_2d_result = torch.ops.pyflash.scalar2d(q, k, v)
+# cold run the kernels before profiling
+manual_result = manual_attn(q, k, v)
+naive_result = torch.ops.pyflash.naive(q, k, v)
+scalar_2d_result = torch.ops.pyflash.scalar2d(q, k, v)
 
 print('=== profiling manual attention ===')
 
