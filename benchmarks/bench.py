@@ -5,6 +5,8 @@ from torch.nn import functional as F
 from torch.utils.cpp_extension import load
 from pathlib import Path
 
+print("Pytorch version:", torch.__version__)
+
 projectDir = Path(__file__).parent.parent.resolve()
 pyflashPath = str(projectDir / "build/pyflash/libpyflash.so")
 print("loading pyflash from", pyflashPath)
@@ -43,9 +45,9 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
 
 print('=== profiling minimal flash attention === ')
 
-# # with torch.autograd.profiler.profile(use_device='cuda') as prof:
-# #     igor_result = minimal_attn.forward_opt(q, k, v)
-# # print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+with torch.autograd.profiler.profile(use_device='cuda') as prof:
+    O = torch.ops.pyflash.naive(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
 
 with torch.autograd.profiler.profile(use_device='cuda') as prof:
     O = torch.ops.pyflash.scalar2d(q, k, v)

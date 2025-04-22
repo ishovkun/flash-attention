@@ -39,7 +39,7 @@ static void checkRequestedSharedMemory(int requested_shared_memory) {
 __global__ void forward_kernel_2d(float const *__restrict__ Q,
                                   float const *__restrict__ K,
                                   float const *__restrict__ V, int N, int d,
-                                  int Tc, int Tr, int Bc, int Br,
+                                  int Bc, int Br,
                                   float softmax_scale, float *__restrict__ l,
                                   float *__restrict__ m, float *__restrict__ O);
 
