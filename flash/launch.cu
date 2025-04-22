@@ -22,6 +22,9 @@ static void checkRequestedSharedMemory(int requested_shared_memory) {
   int max_sram_size;
   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
   if (requested_shared_memory > max_sram_size) {
+    std::cerr << "Requested shared memory " << requested_shared_memory
+              << " exceeds maximum allowed (" << max_sram_size << ")"
+              << std::endl;
     throw std::runtime_error("Requested shared memory exceeds maximum allowed");
   }
 }
@@ -67,20 +70,19 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
    */
   // Compute tile size using maximum shared memory per block
   auto tileSize = getTileSize(d);
-  tileSize = 52;
+  // tileSize = 52;
   // std::cout << "Tile size: " << tileSize << std::endl;
-  // auto const Bc = tileSize; auto const Br = tileSize;
 
   // Limit tile size since only 1024 threads can be launched per block
   constexpr int maxBlockSize = 1024;
   if (kernel_type == KernelType::naive1D) {
     tileSize = min(tileSize, maxBlockSize);
-  }
-  else {
+  } else {
     constexpr int warpSize = 32;
     auto maxTileSize = maxBlockSize / warpSize;
     tileSize = std::min(tileSize, maxTileSize);
   }
+  // std::cout << "Tile size: " << tileSize << std::endl;
 
   auto const Bc = tileSize;
   auto const Br = tileSize;
@@ -98,7 +100,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   m = m.to(device);
 
   // Calculate SRAM size needed per block
-  const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+  const int sram_size =
+      (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
   checkRequestedSharedMemory(sram_size);
 
   dim3 grid_dim(B, nh); // batch_size x num_heads
@@ -107,6 +110,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     constexpr int warpSize = 32;
     block_dim = dim3(warpSize, std::max(Br, Bc));
   }
+  // std::cout << "Block size: " << block_dim.x << "x" << block_dim.y << std::endl;
+
   // launch kernel
   switch (kernel_type) {
   case KernelType::naive1D:

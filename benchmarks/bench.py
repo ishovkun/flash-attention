@@ -13,20 +13,15 @@ torch.ops.load_library(pyflashPath)
 # Load the CUDA kernel as a python module
 
 # # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 1
-n_head = 1
-seq_len = 32
-head_embd = 32
-
-# # batch_size = 64
-# # n_head = 16
-# # seq_len = 512
-# # head_embd = 64
+batch_size = 5
+num_heads = 20
+seq_len = 512
+head_embd = 76
 
 torch.manual_seed(0)
-q = torch.randn(batch_size, n_head, seq_len, head_embd).cuda()
-k = torch.randn(batch_size, n_head, seq_len, head_embd).cuda()
-v = torch.randn(batch_size, n_head, seq_len, head_embd).cuda()
+q = torch.randn(batch_size, num_heads, seq_len, head_embd).cuda()
+k = torch.randn(batch_size, num_heads, seq_len, head_embd).cuda()
+v = torch.randn(batch_size, num_heads, seq_len, head_embd).cuda()
 
 # # Our minimal flash attention aims to be faster than this by avoiding HBM read/writes of N^2 matrices.
 def manual_attn(q, k, v):
@@ -35,29 +30,12 @@ def manual_attn(q, k, v):
     y = att @ v
     return y
 
-print('=== correctness check ===')
-manual_result = manual_attn(q, k, v)
-minimal_result = torch.ops.pyflash.naive(q, k, v)
-# # igor_result = minimal_attn.forward_opt(q, k, v)
-# # # if torch.allclose(minimal_result, manual_result, rtol=1e-2):
-# # #     print('=== correctness check passed ===')
-# # # else:
-# # #     print('=== correctness check failed ===')
-# # #     print(manual_result)
-# # #     print(minimal_result)
-# # #     exit(0)
+# print('=== correctness check ===')
+# manual_result = manual_attn(q, k, v)
+# naive_result = torch.ops.pyflash.naive(q, k, v)
+# scalar_2d_result = torch.ops.pyflash.scalar2d(q, k, v)
 
-# # if torch.allclose(igor_result, manual_result, rtol=1e-2, atol=1e-4):
-# #     print('=== correctness check passed ===')
-# # else:
-# #     print('=== correctness check failed ===')
-# #     print("reference")
-# #     print(manual_result)
-# #     print("igor")
-# #     print(igor_result)
-# #     exit(0)
-
-
+print('=== profiling manual attention ===')
 
 # # print('=== profiling manual attention ===')
 
@@ -67,12 +45,12 @@ minimal_result = torch.ops.pyflash.naive(q, k, v)
 
 # # print('=== profiling minimal flash attention === ')
 
-# # with torch.autograd.profiler.profile(use_device='cuda') as prof:
-# #     minimal_result = minimal_attn.forward(q, k, v)
-# # print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+print('=== profiling minimal flash attention === ')
 
 # # with torch.autograd.profiler.profile(use_device='cuda') as prof:
 # #     igor_result = minimal_attn.forward_opt(q, k, v)
 # # print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
-# # # print('attn values sanity check:', torch.allclose(minimal_result, manual_result, rtol=0, atol=1e-02))
+with torch.autograd.profiler.profile(use_device='cuda') as prof:
+    O = torch.ops.pyflash.scalar2d(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
