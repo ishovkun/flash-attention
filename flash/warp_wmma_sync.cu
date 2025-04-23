@@ -39,13 +39,19 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
   for (int j = 0; j < Tc; j++) {
 
+    int const Bcc = min(Bc, N - j * Bc);
+
     // Load Kj, Vj to SRAM
     for (int x = 0; x < tile_size; x += warpSize) {
-      if (x + tx < tile_size) {
-        // TF32 conversion for WMMA
-        Kj[x + tx] = K[qkv_offset + (tile_size * j) + x + tx];
-        Vj[x + tx] = V[qkv_offset + (tile_size * j) + x + tx];
-      }
+      auto jj = x / d;
+      auto inBounds = x + tx < tile_size && j * Bc + jj < N;
+        Kj[x + tx] = inBounds ? K[qkv_offset + (tile_size * j) + x + tx] : 0.f;
+        Vj[x + tx] = inBounds ? V[qkv_offset + (tile_size * j) + x + tx] : 0.f;
+      // if (x + tx < tile_size && j * Bc + jj < N) {
+      //   // TF32 conversion for WMMA
+      //   Kj[x + tx] = K[qkv_offset + (tile_size * j) + x + tx];
+      //   Vj[x + tx] = V[qkv_offset + (tile_size * j) + x + tx];
+      // }
     }
     __syncthreads();
 
@@ -53,13 +59,16 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
       // Load Qi to SRAM
       for (int x = 0; x < tile_size; x += warpSize) {
-        if (x + tx < tile_size)
-          Qi[x + tx] = Q[qkv_offset + (tile_size * i) + x + tx];
+        auto ii = x / d;
+        auto inBounds = x + tx < tile_size && i * Br + ii < N;
+        Qi[x + tx] = inBounds ? Q[qkv_offset + (tile_size * i) + x + tx] : 0.f;
+        // if (x + tx < tile_size && i * Br + ii < N)
+          // Qi[x + tx] = Q[qkv_offset + (tile_size * i) + x + tx];
       }
       __syncthreads();
 
       // Load l and m to registers
-      float row_m_prev, row_l_prev;
+      float row_m_prev = -INFINITY, row_l_prev = 0.f;
       if (tx < Br) {
         row_m_prev = m[lm_offset + (Br * i) + tx];
         row_l_prev = l[lm_offset + (Br * i) + tx];
@@ -67,11 +76,9 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
       // S = QK^T - tensor cores going brrr
       using namespace wmma;
-      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
-          q_frag;
+      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major> q_frag;
       // note col_major for transpose
-      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, col_major>
-          k_frag;
+      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, col_major> k_frag;
       fragment<accumulator, WMMA_M, WMMA_N, WMMA_K, float> s_frag;
       fill_fragment(s_frag, 0.0f);
 
@@ -84,25 +91,23 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
       float row_m = -INFINITY;
       float row_l = 0;
-      if (tx < Br) {
+      if (tx < Br && Bc * i + tx < N) {
         // Softmax scaling, row_m = rowmax(S)
-        for (int x = 0; x < Bc; x++) {
+        for (int x = 0; x < Bcc; x++) {
           Sij[(Bc * tx) + x] *= softmax_scale;
           row_m = max(row_m, Sij[(Bc * tx) + x]);
         }
 
         // P = exp(S - row_m), row_l = rowsum(P)
-        for (int x = 0; x < Bc; x++) {
-          Sij[(Bc * tx) + x] = __expf(Sij[(Bc * tx) + x] - row_m);
+        for (int x = 0; x < Bcc; x++) {
+          Sij[(Bc * tx) + x] = (x < Bcc) ? __expf(Sij[(Bc * tx) + x] - row_m) : 0.0f;
           row_l += Sij[(Bc * tx) + x];
         }
       }
 
       // PV = Pij * Vj - tensor cores going brrr again
-      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
-          p_frag;
-      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major>
-          v_frag;
+      fragment<matrix_a, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major> p_frag;
+      fragment<matrix_b, WMMA_M, WMMA_N, WMMA_K, precision::tf32, row_major> v_frag;
       fragment<accumulator, WMMA_M, WMMA_N, WMMA_K, float> pv_frag;
 
       for (int x = 0; x < d; x += WMMA_M) {
@@ -112,11 +117,11 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
           wmma::load_matrix_sync(v_frag, Vj + x + (k * d), d);
           wmma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
         }
-        wmma::store_matrix_sync(Qi + x, pv_frag, d,
-                                wmma::mem_row_major); // store it in unused Qi
+        // store it in unused Qi
+        wmma::store_matrix_sync(Qi + x, pv_frag, d, wmma::mem_row_major);
       }
 
-      if (tx < Br) {
+      if (tx < Br && i * Br + tx < N) {
         // Compute new m and l
         float row_m_new = max(row_m_prev, row_m);
         float row_l_new = (__expf(row_m_prev - row_m_new) * row_l_prev) +

@@ -26,19 +26,20 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
     float* S = &sram[tile_size * 3];  // [tile_size]
 
     for (int j = 0; j < Tc; j++) { // j tile
-
-        // Load Kj, Vj to SRAM
-        for (int x = 0; x < d; x++) {
-            // K_jx
-            // true jj = (Bc*d*j) + (tx * d)
-            Kj[(tx * d) + x] = (j*Bc + tx < N) ? K[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
-            Vj[(tx * d) + x] = (j*Bc + tx < N) ? V[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
-        }
-        __syncthreads();  // such that the inner loop can use the correct Kj, Vj
+      //
+      // Potentially cropped Bc in the last tile
+      auto Bcc = min(Bc, N - j*Bc);
+      // Load Kj, Vj to SRAM
+      for (int x = 0; x < d; x++) {
+          // K_jx
+          // true jj = (Bc*d*j) + (tx * d)
+          Kj[(tx * d) + x] = (j*Bc + tx < N) ? K[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
+          Vj[(tx * d) + x] = (j*Bc + tx < N) ? V[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
+      }
+      __syncthreads();  // such that the inner loop can use the correct Kj, Vj
 
         for (int i = 0; i < Tr; i++)  { // i tile
             // true ii = (Br*d*i) + (tx * d)
-            int const Bcc = i*Bc + Bc-1 < N ? Bc : N - i*Bc;
 
             // Load Qi to SRAM, l and m to registers
             for (int x = 0; x < d; x++) {
@@ -55,7 +56,7 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
                     sum += Qi[(tx * d) + x] * Kj[(y * d) + x];
                 }
                 sum *= softmax_scale;
-                S[(Bcc * tx) + y] = sum;
+                S[(Bc * tx) + y] = sum;
 
                 if (sum > row_m)
                     row_m = sum;
@@ -64,8 +65,8 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
             // P = exp(S - row_m), row_l = rowsum(P)
             float row_l = 0;
             for (int y = 0; y < Bcc; y++) {
-                S[(Bcc * tx) + y] = __expf(S[(Bcc * tx) + y] - row_m);
-                row_l += S[(Bcc * tx) + y];
+                S[(Bc * tx) + y] = __expf(S[(Bc * tx) + y] - row_m);
+                row_l += S[(Bc * tx) + y];
             }
 
             // Compute new m and l
@@ -76,7 +77,7 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
             for (int x = 0; x < d; x++) {
                 float pv = 0;  // Pij * Vj
                 for (int y = 0; y < Bcc; y++) {
-                    pv += S[(Bcc * tx) + y] * Vj[(y * d) + x];
+                    pv += S[(Bc * tx) + y] * Vj[(y * d) + x];
                 }
                 if (i*Br + tx < N)
                   O[qkv_offset + (tile_size * i) + (tx * d) + x] = (1 / row_l_new) \

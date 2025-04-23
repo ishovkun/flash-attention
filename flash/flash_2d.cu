@@ -47,6 +47,8 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
   auto ty = threadIdx.y;
 
   for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
+    // Potentially cropped Bc in the last tile
+    auto Bcc = min(Bc, N - jStart);
     // load Kj, Vj
     for (int k = tx; k < d; k += blockDim.x) {
       auto jj = ty;
@@ -57,11 +59,6 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
     // __syncthreads();
 
     for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
-      // Bc might be smaller in the last tile cause N does not necessarily
-      // divide by Bc then the local size of Bc must change to prevent index
-      // errors
-      int const Bc_cur = min(Bc, N - iStart);
-
       // Load Qi
       auto ii = ty;
       auto i = iStart + ii;
@@ -71,14 +68,15 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
 
       // Compute Sij and row_max
       float row_m = -INFINITY;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
+      for (int jj = tx; jj < Bcc; jj += blockDim.x) {
         float Sij = 0.f;
         for (int k = 0; k < d; k++) {
           Sij += Qi[ii * d + k] * Kj[jj * d + k];
         }
         Sij *= softmax_scale;
         S[Bc * ii + jj] = Sij;
-        row_m = (jj < Bc_cur) ? float_max(row_m, Sij) : row_m;
+        // track row maximum
+        row_m = float_max(row_m, Sij);
       }
 
       // take min over row (j dimention)
@@ -86,8 +84,8 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
 
       // S = [Br x Bc]
       float row_l = 0.f;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        float Sij = (jj < Bc_cur) ? __expf(S[Bc * ii + jj] - row_m) : 0.f;;
+      for (int jj = tx; jj < Bcc; jj += blockDim.x) {
+        float Sij = __expf(S[Bc * ii + jj] - row_m);
         S[Bc * ii + jj] = Sij;
         row_l += Sij;
       }
