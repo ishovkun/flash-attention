@@ -71,23 +71,24 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
 
       // Compute Sij and row_max
       float row_m = -INFINITY;
-      for (int jj = tx; jj < Bc_cur; jj += blockDim.x) {
+      for (int jj = tx; jj < Bc; jj += blockDim.x) {
         float Sij = 0.f;
         for (int k = 0; k < d; k++) {
           Sij += Qi[ii * d + k] * Kj[jj * d + k];
         }
         Sij *= softmax_scale;
-        S[Bc_cur * ii + jj] = Sij;
-        row_m = float_max(row_m, Sij);
+        S[Bc * ii + jj] = Sij;
+        row_m = (jj < Bc_cur) ? float_max(row_m, Sij) : row_m;
       }
+
       // take min over row (j dimention)
       row_m = warpReduce<float_max>(row_m);
 
       // S = [Br x Bc]
       float row_l = 0.f;
-      for (int jj = tx; jj < Bc_cur; jj += blockDim.x) {
-        float Sij = __expf(S[Bc_cur * ii + jj] - row_m);
-        S[Bc_cur * ii + jj] = Sij;
+      for (int jj = tx; jj < Bc; jj += blockDim.x) {
+        float Sij = (jj < Bc_cur) ? __expf(S[Bc * ii + jj] - row_m) : 0.f;;
+        S[Bc * ii + jj] = Sij;
         row_l += Sij;
       }
       row_l = warpReduce<float_add>(row_l);
@@ -104,8 +105,8 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       // O[Br,d] = S[Br, Bc] * V[Bc, d]
       for (int k = tx; k < d; k += blockDim.x) {
         float PinVnk = 0.f;
-        for (int n = 0; n < Bc_cur; n++) {
-          PinVnk += S[Bc_cur * ii + n] * Vj[n * d + k];
+        for (int n = 0; n < Bc; n++) {
+          PinVnk += S[Bc * ii + n] * Vj[n * d + k];
         }
         if (i < N)
           O[qkv_offset + i * d + k] =
