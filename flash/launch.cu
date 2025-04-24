@@ -1,7 +1,7 @@
 #include "cuda_constants.hpp"
 #include "launch.hpp"
-#include <thrust/device_vector.h>
 #include <iostream>
+#include <thrust/device_vector.h>
 
 namespace flash {
 
@@ -117,7 +117,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   thrust::device_vector<float> m(B * nh * N, -INFINITY);
 
   // Calculate SRAM size needed per block
-  const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+  int const sram_size =
+      (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
   checkRequestedSharedMemory(sram_size);
 
   dim3 gridDim(B, nh); // batch_size x num_heads
@@ -137,15 +138,15 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   case KernelType::scalar2D:
     forward_kernel_2d<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
-        Br, softmax_scale, l.data().get(), m.data().get(),
-        O.data_ptr<float>());
+        Br, softmax_scale, l.data().get(), m.data().get(), O.data_ptr<float>());
     break;
   case KernelType::warp_wmma_sync: {
     const int Tc = ceil((float)N / Bc);
     const int Tr = ceil((float)N / Br);
     warp_wmma_sync<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l.data().get(), m.data().get(), O.data_ptr<float>());
+        Tr, Bc, Br, softmax_scale, l.data().get(), m.data().get(),
+        O.data_ptr<float>());
     break;
   }
   default:

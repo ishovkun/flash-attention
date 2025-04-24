@@ -59,9 +59,10 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
     // __syncthreads();
 
     for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
-      // Load Qi
       auto ii = ty;
       auto i = iStart + ii;
+
+      // Load Qi
       for (int k = tx; k < d; k += blockDim.x)
         Qi[ii * d + k] = (i < N) ? Q[qkv_offset + i * d + k] : 0.f;
       // __syncthreads();// -- not needed

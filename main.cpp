@@ -66,8 +66,8 @@ auto main() -> int {
 
   /* Correctness tests */
   AttentionParameters params{
-    .batch_size = 1,
-    .num_heads = 1,
+    .batch_size = 5,
+    .num_heads = 12,
     .seq_len = 53,
     .head_embd = 64,
   };
