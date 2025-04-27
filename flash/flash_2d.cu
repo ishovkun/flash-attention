@@ -1,23 +1,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "common.hpp"
 
 namespace flash {
-
-inline float __device__ float_max(float a, float b) { return a > b ? a : b; }
-
-inline float __device__ float_add(float a, float b) { return a + b; }
-
-template <auto binaryFunc = float_add>
-__device__ float warpReduce(float value) {
-  constexpr int warpSize = 32;
-  int lane = threadIdx.x % warpSize;
-  for (int s = warpSize / 2; s > 0; s >>= 1) {
-    auto tmp = __shfl_down_sync(UINT32_MAX, value, s);
-    if (lane < s)
-      value = binaryFunc(value, tmp);
-  }
-  return __shfl_sync(UINT32_MAX, value, 0);
-}
 
 __global__ void
 forward_kernel_2d(float const *__restrict__ Q, // query vector
@@ -77,11 +62,11 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
         Sij *= softmax_scale;
         S[Bc * ii + jj] = Sij;
         // track row maximum
-        row_m = float_max(row_m, Sij);
+        row_m = common::float_max(row_m, Sij);
       }
 
-      // take min over row (j dimention)
-      row_m = warpReduce<float_max>(row_m);
+      // take max over row (j dimention)
+      row_m = common::warpReduce<common::float_max>(row_m);
 
       // S = [Br x Bc]
       float row_l = 0.f;
@@ -90,11 +75,11 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
         S[Bc * ii + jj] = Sij;
         row_l += Sij;
       }
-      row_l = warpReduce<float_add>(row_l);
+      row_l = common::warpReduce<common::float_add>(row_l);
 
       float row_m_prev = (i < N) ? m[lm_offset + i] : -INFINITY;
       float row_l_prev = (i < N) ? l[lm_offset + i] : 0.f;
-      float row_m_new = float_max(row_m_prev, row_m);
+      float row_m_new = common::float_max(row_m_prev, row_m);
       float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                         __expf(row_m - row_m_new) * row_l;
 

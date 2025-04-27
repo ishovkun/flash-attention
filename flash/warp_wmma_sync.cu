@@ -74,13 +74,13 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
       constants::fragC_t s_frag;
       fill_fragment(s_frag, 0.0f);
 
-      for (int k = 0; k < d; k += WMMA_K) {
-        load_matrix_sync(q_frag, Qi + k, d);
-        load_matrix_sync(k_frag, Kj + k, d);
+      for (int k = 0; k < d; k += constants::WMMA_K) {
+        wmma::load_matrix_sync(q_frag, Qi + k, d);
+        wmma::load_matrix_sync(k_frag, Kj + k, d);
         // S_frag += q_frag * k_frag
-        mma_sync(s_frag, q_frag, k_frag, s_frag);
+        wmma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
-      store_matrix_sync(Sij, s_frag, constants::WMMA_M, wmma::mem_row_major);
+      wmma::store_matrix_sync(Sij, s_frag, constants::WMMA_M, wmma::mem_row_major);
 
       float row_m = -INFINITY;
       float row_l = 0;
@@ -104,7 +104,6 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
       constants::fragA_t p_frag;
       constants::fragB_rm_t v_frag;
       constants::fragC_t pv_frag;
-
 
       for (int x = 0; x < d; x += constants::WMMA_M) {
         wmma::fill_fragment(pv_frag, 0.0f);
