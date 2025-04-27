@@ -69,7 +69,7 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
       // S = QK^T - tensor cores going brrr
       using constants::WMMA_K;
-      constants::fragA_t q_frag; // (16x8) WMMA_M x WMMA_K, row_major
+      constants::fragA_t q_frag;    // (16x8) WMMA_M x WMMA_K, row_major
       constants::fragB_cm_t k_frag; // (8x16) WMMA_K x WMMA_N, col_major
       constants::fragC_t s_frag;
       fill_fragment(s_frag, 0.0f);
@@ -80,7 +80,8 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
         // S_frag += q_frag * k_frag
         wmma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
-      wmma::store_matrix_sync(Sij, s_frag, constants::WMMA_M, wmma::mem_row_major);
+      wmma::store_matrix_sync(Sij, s_frag, constants::WMMA_M,
+                              wmma::mem_row_major);
 
       float row_m = -INFINITY;
       float row_l = 0;

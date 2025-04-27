@@ -1,6 +1,8 @@
 #include "cuda_constants.hpp"
 #include "launch.hpp"
+#include <climits>
 #include <iostream>
+#include <sstream>
 #include <thrust/device_vector.h>
 
 namespace flash {
@@ -23,6 +25,21 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
                                const int Tr, const int Bc, const int Br,
                                const float softmax_scale, float *l, float *m,
                                float *O);
+
+__global__ void block_wmma_sync(float const *__restrict__ Q,
+                                float const *__restrict__ K,
+                                float const *__restrict__ V, int N, int d,
+                                int Bc, int Br, float softmax_scale,
+                                float *__restrict__ l, float *__restrict__ m,
+                                float *__restrict__ O);
+
+#define INVALID_ARGUMENT(msg)                                                  \
+  {                                                                            \
+    std::ostringstream err;                                                    \
+    err << __FILE__ << "(" << __LINE__ << ") "                                 \
+        << "error : " << msg;                                                  \
+    throw std::invalid_argument(err.str());                                    \
+  }
 
 static int maxTileSizeForDeviceSharedMemory(int head_dim) {
   /*
@@ -51,8 +68,12 @@ static int selectTileSize(int d, KernelType kernelType) {
                     maxBlockSize / warpSize);
   case KernelType::warp_wmma_sync:
     return constants::WMMA_M;
-  default:
-    throw std::invalid_argument("Unsupported kernel type");
+  case KernelType::block_wmma_sync:
+    return std::min(maxTileSizeForDeviceSharedMemory(d),
+                    maxBlockSize / warpSize);
+  default: {
+    INVALID_ARGUMENT("Unsupported kernel type");
+  }
   }
 }
 
@@ -64,8 +85,11 @@ static dim3 selectBlockDim(int tileSize, KernelType kernelType) {
     return dim3(tileSize, constants::warpSize);
   case KernelType::warp_wmma_sync:
     return constants::warpSize;
-  default:
-    throw std::invalid_argument("Unsupported kernel type");
+  case KernelType::block_wmma_sync:
+    return dim3(tileSize, constants::warpSize);
+  default: {
+    INVALID_ARGUMENT("Unsupported kernel type");
+  }
   }
 }
 
@@ -149,8 +173,13 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
         O.data_ptr<float>());
     break;
   }
+  case KernelType::block_wmma_sync:
+    block_wmma_sync<<<gridDim, blockDim, sram_size>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
+        Br, softmax_scale, l.data().get(), m.data().get(), O.data_ptr<float>());
+    break;
   default:
-    throw std::runtime_error("Unsupported kernel type");
+    INVALID_ARGUMENT("Unsupported kernel type");
   }
   gpuErrchk(cudaPeekAtLastError());
   gpuErrchk(cudaDeviceSynchronize());

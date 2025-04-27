@@ -1,5 +1,5 @@
-#include <torch/torch.h>
 #include "flash/launch.hpp"
+#include <torch/torch.h>
 
 struct AttentionParameters {
   int batch_size;
@@ -9,13 +9,13 @@ struct AttentionParameters {
 };
 
 auto manual_attn(auto q, auto k, auto v) {
-  auto att = (q.matmul( k.transpose(-2, -1)) * (1.0 / sqrt(k.size(-1))));
+  auto att = (q.matmul(k.transpose(-2, -1)) * (1.0 / sqrt(k.size(-1))));
   att = torch::nn::functional::softmax(att, -1);
   auto y = att.matmul(v);
   return y;
 }
 
-auto generate_data(auto const & p) {
+auto generate_data(auto const &p) {
   torch::manual_seed(0);
   auto q = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
   auto k = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
