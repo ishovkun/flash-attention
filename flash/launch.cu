@@ -1,6 +1,5 @@
 #include "cuda_constants.hpp"
 #include "launch.hpp"
-#include <climits>
 #include <iostream>
 #include <sstream>
 #include <thrust/device_vector.h>

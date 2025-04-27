@@ -1,5 +1,5 @@
-#include "flash/launch.hpp"
 #include <torch/torch.h>
+#include "flash/launch.hpp"
 
 struct AttentionParameters {
   int batch_size;
