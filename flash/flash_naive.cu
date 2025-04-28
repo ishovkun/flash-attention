@@ -11,11 +11,11 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
                           const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
                           float* l, float *m, float* O) {
     int tx = threadIdx.x;
-    int bx = blockIdx.x; int by = blockIdx.y;  // batch and head index
+    int batch = blockIdx.x; int head = blockIdx.y;
 
     // Offset into Q,K,V,O,l,m - different for each batch and head
-    int qkv_offset = (bx * gridDim.y * N * d) + (by * N * d);  // gridDim.y = nh
-    int lm_offset = (bx * gridDim.y * N) + (by * N);  // offset for l and m
+    int qkv_offset = (batch * gridDim.y * N * d) + (head * N * d);  // gridDim.y = nh
+    int lm_offset = (batch * gridDim.y * N) + (head * N);  // offset for l and m
 
     // Define SRAM for Q,K,V,S
     extern __shared__ float sram[];

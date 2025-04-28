@@ -15,7 +15,12 @@ namespace flash::common {
       if (lane < s)
         value = binaryFunc(value, tmp);
     }
+    // broadcast value from lane 0
     return __shfl_sync(UINT32_MAX, value, 0);
+  }
+
+  inline int __device__ ceil_div(int a, int b) {
+    return (a + b - 1) / b;
   }
 
 } // end namespace flash::common

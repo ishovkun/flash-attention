@@ -16,11 +16,11 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
                   float *__restrict__ m, // storage temp for row \max S
                   float *__restrict__ O) // output attention
 {
-  int bx = blockIdx.x; // batch index
-  int by = blockIdx.y; // head index
+  int batch = blockIdx.x;
+  int head = blockIdx.y;
 
-  int qkv_offset = (bx * gridDim.y * N * d) + (by * N * d); // gridDim.y = nh
-  int lm_offset = (bx * gridDim.y * N) + (by * N); // offset for l and m
+  int qkv_offset = (batch * gridDim.y * N * d) + (head * N * d); // gridDim.y = nh
+  int lm_offset = (batch * gridDim.y * N) + (head * N); // offset for l and m
 
   extern __shared__ float sram[];
   float *Qi = sram;                    // size = Br x d

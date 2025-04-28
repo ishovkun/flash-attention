@@ -23,7 +23,8 @@ auto generate_data(auto const &p) {
   return std::make_tuple(q, k, v);
 }
 
-bool run_and_compare(auto test_name, auto reference, double atol, double rtol, auto && kernel) {
+bool run_and_compare(auto test_name, auto reference, double atol, double rtol,
+                     auto &&kernel) {
   auto result = kernel();
   bool test_result = torch::allclose(result, reference, atol, rtol);
   // std::cout << "Reference: " << reference << std::endl;
@@ -39,17 +40,19 @@ bool run_and_compare(auto test_name, auto reference, double atol, double rtol, a
           for (int d = 0; d < result.size(3); d++) {
             auto ref = reference[b][h][n][d].template item<float>();
             auto res = result[b][h][n][d].template item<float>();
-            if (std::fabs(res - ref) > atol + rtol * std::fabs(ref) || std::isnan(res)) {
-              std::cout << "Mismatch[" << b << "," << h << "," << n << "," << d << "] = "
+            if (std::fabs(res - ref) > atol + rtol * std::fabs(ref) ||
+                std::isnan(res)) {
+              std::cout << "Mismatch[" << b << "," << h << "," << n << "," << d
+                        << "] = "
                         << "ref = " << ref << ", res = " << res << std::endl;
-              if (mismatch_count++ > 10) return false;
+              if (mismatch_count++ > 10)
+                return false;
             }
           }
         }
       }
     }
-  }
-  else {
+  } else {
     std::cout << test_name << ": Test passed [✓ ]" << std::endl;
   }
   return test_result;
@@ -57,20 +60,23 @@ bool run_and_compare(auto test_name, auto reference, double atol, double rtol, a
 
 auto main() -> int {
 
-  // AttentionParameters params{
-  //   .batch_size = 1,
-  //   .num_heads = 16,
-  //   .seq_len = 32,
-  //   .head_embd = 32,
-  // };
+  AttentionParameters params{
+    .batch_size = 1,
+    .num_heads = 1,
+    // .seq_len = 52,
+    .seq_len = 64,
+    // .seq_len = 33,
+    // .seq_len = 8,
+    .head_embd = 32,
+  };
 
   /* Correctness tests */
-  AttentionParameters params{
-    .batch_size = 5,
-    .num_heads = 12,
-    .seq_len = 53,
-    .head_embd = 64,
-  };
+  // AttentionParameters params{
+  //     .batch_size = 5,
+  //     .num_heads = 12,
+  //     .seq_len = 53,
+  //     .head_embd = 64,
+  // };
 
   // # GPT2 parameters. Slower if seq_len is too big.
   // AttentionParameters params{
@@ -79,7 +85,6 @@ auto main() -> int {
   //   .seq_len = 1024,
   //   .head_embd = 64,
   // };
-
 
   auto [q, k, v] = generate_data(params);
   auto manual_result = manual_attn(q, k, v);
@@ -96,6 +101,9 @@ auto main() -> int {
   });
   run_and_compare("Flash wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
+  });
+  run_and_compare("Flash block wmma sync", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
   });
 
   return EXIT_SUCCESS;
