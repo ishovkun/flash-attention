@@ -31,6 +31,12 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
   auto tx = threadIdx.x;
   auto ty = threadIdx.y;
 
+  // set l and m to default values
+  for (int i = ty*blockDim.x + tx; i < N; i += blockDim.x*blockDim.y) {
+    l[lm_offset + i] = 0.f;
+    m[lm_offset + i] = -INFINITY;
+  }
+
   for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
     // Potentially cropped Bc in the last tile
     auto Bcc = min(Bc, N - jStart);

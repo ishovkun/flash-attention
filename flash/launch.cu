@@ -1,8 +1,9 @@
-#include "cuda_constants.hpp"
 #include "launch.hpp"
 #include <iostream>
 #include <sstream>
 #include <thrust/device_vector.h>
+#include "cuda_constants.hpp"
+#include "common.hpp"
 
 namespace flash {
 
@@ -136,8 +137,12 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
 
   // Initialize O, l, m to HBM
   auto O = torch::zeros_like(Q);
-  thrust::device_vector<float> l(B * nh * N, 0.f);
-  thrust::device_vector<float> m(B * nh * N, -INFINITY);
+
+  float *l, *m;
+  cudaMalloc(&l, B*nh*N);
+  cudaMalloc(&m, B*nh*N);
+  // thrust::device_vector<float> l(B * nh * N, 0.f);
+  // thrust::device_vector<float> m(B * nh * N, -INFINITY);
 
   // Calculate SRAM size needed per block
   int const sram_size =
@@ -154,34 +159,37 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     const int Tr = ceil((float)N / Br);
     naive_forward_kernel<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l.data().get(), m.data().get(),
+        Tr, Bc, Br, softmax_scale, l, m,
         O.data_ptr<float>());
     break;
   }
   case KernelType::scalar2D:
     forward_kernel_2d<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
-        Br, softmax_scale, l.data().get(), m.data().get(), O.data_ptr<float>());
+        Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   case KernelType::warp_wmma_sync: {
     const int Tc = ceil((float)N / Bc);
     const int Tr = ceil((float)N / Br);
     warp_wmma_sync<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l.data().get(), m.data().get(),
+        Tr, Bc, Br, softmax_scale, l, m,
         O.data_ptr<float>());
     break;
   }
   case KernelType::block_wmma_sync:
     block_wmma_sync<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
-        Br, softmax_scale, l.data().get(), m.data().get(), O.data_ptr<float>());
+        Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   default:
     INVALID_ARGUMENT("Unsupported kernel type");
   }
   gpuErrchk(cudaPeekAtLastError());
   gpuErrchk(cudaDeviceSynchronize());
+
+  cudaFree(l);
+  cudaFree(m);
 
   return O;
 }

@@ -1,7 +1,8 @@
-#include "cuda_constants.hpp"
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <mma.h>
+#include "cuda_constants.hpp"
+#include "common.hpp"
 
 namespace flash {
 

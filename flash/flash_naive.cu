@@ -25,6 +25,12 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
     float* Vj = &sram[tile_size * 2]; // [tile_size]
     float* S = &sram[tile_size * 3];  // [tile_size]
 
+    // set l and m to default values
+    for (int i = tx; i < N; i += blockDim.x) {
+      l[lm_offset + i] = 0.f;
+      m[lm_offset + i] = -INFINITY;
+    }
+
     for (int j = 0; j < Tc; j++) { // j tile
       //
       // Potentially cropped Bc in the last tile
