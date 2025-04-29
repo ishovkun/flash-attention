@@ -1,5 +1,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <iostream> // debug
 #include "common.hpp"
 
 namespace flash {
@@ -16,11 +17,12 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
                   float *__restrict__ m, // storage temp for row \max S
                   float *__restrict__ O) // output attention
 {
-  int batch = blockIdx.x;
-  int head = blockIdx.y;
+  auto batch = blockIdx.x;
+  auto head = blockIdx.y;
+  auto numHeads = gridDim.y;
 
-  int qkv_offset = (batch * gridDim.y * N * d) + (head * N * d); // gridDim.y = nh
-  int lm_offset = (batch * gridDim.y * N) + (head * N); // offset for l and m
+  auto qkv_offset = (batch * numHeads * N * d) + (head * N * d);
+  auto lm_offset = (batch * numHeads * N) + (head * N);
 
   extern __shared__ float sram[];
   float *Qi = sram;                    // size = Br x d

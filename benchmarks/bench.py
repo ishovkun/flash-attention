@@ -22,7 +22,6 @@ from torch.ops import pyflash
 batch_size = 8
 num_heads = 12
 seq_len = 1024
-# seq_len = 12
 head_embd = 64
 
 torch.manual_seed(0)
@@ -42,18 +41,25 @@ manual_result = manual_attn(q, k, v)
 naive_result = pyflash.naive(q, k, v)
 scalar_2d_result = pyflash.scalar2d(q, k, v)
 warp_wmma_sync_result = pyflash.warp_wmma_sync(q, k, v)
+block_wmma_sync_result = pyflash.block_wmma_sync(q, k, v)
 
 with profiler.profile(use_device='cuda') as prof:
     O = manual_attn(q, k, v)
-    print(prof.key_averages().table())
-# print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+    # print(prof.key_averages().table())
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
 
-print('=== profiling minimal flash attention === ')
+with profiler.profile(use_device='cuda') as prof:
+    O = pyflash.naive(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+
+with profiler.profile(use_device='cuda') as prof:
+    O = pyflash.scalar2d(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
 
 with torch.autograd.profiler.profile(use_device='cuda') as prof:
-    O = torch.ops.pyflash.naive(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
+    O = pyflash.warp_wmma_sync(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
 
 with torch.autograd.profiler.profile(use_device='cuda') as prof:
-    O = torch.ops.pyflash.scalar2d(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=5))
+    O = pyflash.block_wmma_sync(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))

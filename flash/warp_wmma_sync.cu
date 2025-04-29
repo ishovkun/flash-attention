@@ -19,17 +19,19 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
   int head = blockIdx.y; // batch and head index
 
   // Offset into Q,K,V,O,l,m - different for each batch and head
-  int qkv_offset =
-      (batch * gridDim.y * N * d) + (head * N * d);     // gridDim.y = nh
+  int qkv_offset = (batch * gridDim.y * N * d) + (head * N * d);     // gridDim.y = nh
   int lm_offset = (batch * gridDim.y * N) + (head * N); // offset for l and m
+
+  // padded dimension d for wmma alignment
+  auto dp = common::nextMultiple(d, constants::WMMA_N);
 
   // Define SRAM for Q,K,V,S
   extern __shared__ float sram[];
   int tile_size = Bc * d; // size of Qi, Kj, Vj
   float *Qi = sram;
-  float *Kj = &sram[tile_size];
-  float *Vj = &sram[tile_size * 2];
-  float *Sij = &sram[tile_size * 3];
+  float *Kj = &sram[Br * dp];
+  float *Vj = &sram[dp * (Bc + Br)];
+  float *Sij = &sram[dp*(Br + 2*Bc)];
 
   // Initialize l and m
   for (int x = 0; x < N; x += warpSize) {
@@ -44,21 +46,23 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
     int const Bcc = min(Bc, N - j * Bc);
 
     // Load Kj, Vj to SRAM
-    for (int x = 0; x < tile_size; x += warpSize) {
-      auto jj = x / d;
-      auto inBounds = x + tx < tile_size && j * Bc + jj < N;
-      Kj[x + tx] = inBounds ? K[qkv_offset + (tile_size * j) + x + tx] : 0.f;
-      Vj[x + tx] = inBounds ? V[qkv_offset + (tile_size * j) + x + tx] : 0.f;
+    for (int jj = 0; jj < Bc; jj++ ) {
+      for (auto k = tx; k < dp; k += warpSize) {
+        auto inBounds = jj < Bcc && k < d;
+        Kj[jj*dp + k] = inBounds ? K[qkv_offset + j*tile_size + jj*d + k] : 0.f;
+        Vj[jj*dp + k] = inBounds ? V[qkv_offset + j*tile_size + jj*d + k] : 0.f;
+      }
     }
     __syncthreads();
 
     for (int i = 0; i < Tr; i++) {
 
       // Load Qi to SRAM
-      for (int x = 0; x < tile_size; x += warpSize) {
-        auto ii = x / d;
-        auto inBounds = x + tx < tile_size && i * Br + ii < N;
-        Qi[x + tx] = inBounds ? Q[qkv_offset + (tile_size * i) + x + tx] : 0.f;
+      for (int ii = 0; ii < Br; ii++) {
+        for (auto k = tx; k < dp; k += warpSize) {
+          auto inBounds = i*Br + ii < N && k < d;
+          Qi[ii*dp + k] = inBounds ? Q[qkv_offset + (tile_size * i) + ii*d + k] : 0.f;
+        }
       }
       __syncthreads();
 
@@ -76,8 +80,8 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
       fill_fragment(s_frag, 0.0f);
 
       for (int k = 0; k < d; k += constants::WMMA_K) {
-        wmma::load_matrix_sync(q_frag, Qi + k, d);
-        wmma::load_matrix_sync(k_frag, Kj + k, d);
+        wmma::load_matrix_sync(q_frag, Qi + k, dp);
+        wmma::load_matrix_sync(k_frag, Kj + k, dp);
         // S_frag += q_frag * k_frag
         wmma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
@@ -95,8 +99,6 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
 
         // P = exp(S - row_m), row_l = rowsum(P)
         for (int x = 0; x < Bcc; x++) {
-          // Sij[(Bc * tx) + x] = (x < Bcc) ? __expf(Sij[(Bc * tx) + x] - row_m)
-          // : 0.0f;
           Sij[(Bc * tx) + x] = __expf(Sij[(Bc * tx) + x] - row_m);
           row_l += Sij[(Bc * tx) + x];
         }
@@ -112,11 +114,11 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
         wmma::fill_fragment(pv_frag, 0.0f);
         for (int k = 0; k < Bc; k += constants::WMMA_K) {
           wmma::load_matrix_sync(p_frag, Sij + k, Bc);
-          wmma::load_matrix_sync(v_frag, Vj + x + (k * d), d);
+          wmma::load_matrix_sync(v_frag, Vj + x + (k * dp), dp);
           wmma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
         }
         // store it in unused Qi
-        wmma::store_matrix_sync(Qi + x, pv_frag, d, wmma::mem_row_major);
+        wmma::store_matrix_sync(Qi + x, pv_frag, dp, wmma::mem_row_major);
       }
 
       if (tx < Br && i * Br + tx < N) {
@@ -131,7 +133,7 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
               (1 / row_l_new) *
               ((row_l_prev * __expf(row_m_prev - row_m_new) *
                 O[qkv_offset + (tile_size * i) + (tx * d) + x]) +
-               (__expf(row_m - row_m_new) * Qi[(tx * d) + x]));
+               (__expf(row_m - row_m_new) * Qi[(tx * dp) + x]));
         }
         m[lm_offset + (Br * i) + tx] = row_m_new;
         l[lm_offset + (Br * i) + tx] = row_l_new;

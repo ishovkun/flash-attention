@@ -120,6 +120,13 @@ static inline void gpuAssert(cudaError_t code, const char *file, int line,
   }
 }
 
+static inline int selectPadding(int d, KernelType kernelType) {
+  if (kernelType == KernelType::warp_wmma_sync ||
+      kernelType == KernelType::block_wmma_sync)
+    return  common::nextMultiple(d, constants::WMMA_N);
+  else return d;
+}
+
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                       KernelType kernelType) {
   const int B = Q.size(0);  // batch size
@@ -127,8 +134,9 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   const int N = Q.size(2);  // sequence length
   const int d = Q.size(3);  // head dimension
 
-  auto const tileSize = selectTileSize(d, kernelType);
-  // std::cout << "Tile size: " << tileSize << std::endl;
+  auto const d_pad = selectPadding(d, kernelType);
+
+  auto const tileSize = selectTileSize(d_pad, kernelType);
 
   auto const Bc = tileSize;
   auto const Br = tileSize;
@@ -139,24 +147,25 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto O = torch::zeros_like(Q);
 
   float *l, *m;
-  cudaMalloc(&l, B*nh*N);
-  cudaMalloc(&m, B*nh*N);
-  // thrust::device_vector<float> l(B * nh * N, 0.f);
-  // thrust::device_vector<float> m(B * nh * N, -INFINITY);
+  cudaMalloc(&l, B*nh*N*sizeof(float));
+  cudaMalloc(&m, B*nh*N*sizeof(float));
 
   // Calculate SRAM size needed per block
-  int const sram_size =
-      (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+  int const sram_size = (3 * Bc * d_pad * sizeof(float)) + (Bc * Br * sizeof(float));
   checkRequestedSharedMemory(sram_size);
 
   dim3 gridDim(B, nh); // batch_size x num_heads
+  // dim3 gridDim(1, 1); // batch_size x num_heads
   dim3 blockDim = selectBlockDim(tileSize, kernelType);
+  std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
+
+  // number of tiles in K/V and Q, respectively
+  auto const Tc = common::ceil_div(N, Bc);
+  auto const Tr = common::ceil_div(N, Br);
 
   // launch kernel
   switch (kernelType) {
   case KernelType::naive1D: {
-    const int Tc = ceil((float)N / Bc);
-    const int Tr = ceil((float)N / Br);
     naive_forward_kernel<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
         Tr, Bc, Br, softmax_scale, l, m,
@@ -169,8 +178,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   case KernelType::warp_wmma_sync: {
-    const int Tc = ceil((float)N / Bc);
-    const int Tr = ceil((float)N / Br);
     warp_wmma_sync<<<gridDim, blockDim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
         Tr, Bc, Br, softmax_scale, l, m,
@@ -185,11 +192,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   default:
     INVALID_ARGUMENT("Unsupported kernel type");
   }
-  gpuErrchk(cudaPeekAtLastError());
-  gpuErrchk(cudaDeviceSynchronize());
-
   cudaFree(l);
   cudaFree(m);
+
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
 
   return O;
 }

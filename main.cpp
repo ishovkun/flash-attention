@@ -1,5 +1,5 @@
-#include <torch/torch.h>
 #include "flash/launch.hpp"
+#include <torch/torch.h>
 
 struct AttentionParameters {
   int batch_size;
@@ -45,7 +45,7 @@ bool run_and_compare(auto test_name, auto reference, double atol, double rtol,
               std::cout << "Mismatch[" << b << "," << h << "," << n << "," << d
                         << "] = "
                         << "ref = " << ref << ", res = " << res << std::endl;
-              if (mismatch_count++ > 10)
+              if (mismatch_count++ > 5)
                 return false;
             }
           }
@@ -58,25 +58,67 @@ bool run_and_compare(auto test_name, auto reference, double atol, double rtol,
   return test_result;
 }
 
+void test_alg(AttentionParameters const &params) {
+  std::cout << "======= Running test ("
+            << "batch = " << params.batch_size << ", "
+            << "heads = " << params.num_heads << ", "
+            << "seq_len = " << params.seq_len << ", "
+            << "embedding dim = " << params.head_embd
+            << ") =======" << std::endl;
+  auto [q, k, v] = generate_data(params);
+  auto manual_result = manual_attn(q, k, v);
+  // std::cout << "Reference: " << manual_result << std::endl;
+
+  double atol = 1e-4;
+  double rtol = 1e-2;
+
+  run_and_compare("Naive", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::naive1D);
+  });
+  run_and_compare("Scalar 2D block", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::scalar2D);
+  });
+  run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
+  });
+  run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
+  });
+}
+
 auto main() -> int {
 
-  AttentionParameters params{
-    .batch_size = 1,
-    .num_heads = 1,
-    // .seq_len = 52,
-    .seq_len = 64,
-    // .seq_len = 33,
-    // .seq_len = 8,
-    .head_embd = 32,
-  };
+  // small aliged
+  test_alg(AttentionParameters{
+      .batch_size = 1,
+      .num_heads = 1,
+      .seq_len = 64,
+      .head_embd = 32,
+  });
 
-  /* Correctness tests */
-  // AttentionParameters params{
-  //     .batch_size = 5,
-  //     .num_heads = 12,
-  //     .seq_len = 53,
-  //     .head_embd = 64,
-  // };
+  // unaligned seq len
+  test_alg(AttentionParameters{
+      .batch_size = 1,
+      .num_heads = 1,
+      .seq_len = 33,
+      .head_embd = 64,
+  });
+
+  // unaligned head embedding dim
+  test_alg(AttentionParameters{
+      .batch_size = 1,
+      .num_heads = 1,
+      .seq_len = 64,
+      .head_embd = 50,
+  });
+
+  // Bigger test with everything unaligned
+  test_alg(AttentionParameters{
+      .batch_size = 5,
+      .num_heads = 12,
+      .seq_len = 53,
+      .head_embd = 69,
+  });
 
   // # GPT2 parameters. Slower if seq_len is too big.
   // AttentionParameters params{
@@ -85,26 +127,6 @@ auto main() -> int {
   //   .seq_len = 1024,
   //   .head_embd = 64,
   // };
-
-  auto [q, k, v] = generate_data(params);
-  auto manual_result = manual_attn(q, k, v);
-  // std::cout << "Reference: " << manual_result << std::endl;
-
-  double atol = 1e-4;
-  double rtol = 1e-2;
-
-  run_and_compare("Flash naive", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::naive1D);
-  });
-  run_and_compare("Flash 2D", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::scalar2D);
-  });
-  run_and_compare("Flash wmma sync", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
-  });
-  run_and_compare("Flash block wmma sync", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
-  });
 
   return EXIT_SUCCESS;
 }
