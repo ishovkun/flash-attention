@@ -17,9 +17,12 @@ auto manual_attn(auto q, auto k, auto v) {
 
 auto generate_data(auto const &p) {
   torch::manual_seed(0);
-  auto q = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
-  auto k = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
-  auto v = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto q =
+      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto k =
+      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto v =
+      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
   return std::make_tuple(q, k, v);
 }
 
@@ -72,18 +75,27 @@ void test_alg(AttentionParameters const &params) {
   double atol = 1e-4;
   double rtol = 1e-2;
 
-  run_and_compare("Naive", manual_result, atol, rtol, [&] {
+   bool ret = true;
+
+  ret &= run_and_compare("Naive", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::naive1D);
   });
-  run_and_compare("Scalar 2D block", manual_result, atol, rtol, [&] {
+  ret &= run_and_compare("Scalar 2D block", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::scalar2D);
   });
-  run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
+  ret &= run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
   });
-  run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
+  ret &= run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
   });
+  // ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
+  //   return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
+  // });
+  if (!ret) {
+    std::cout << "Test failed!" << std::endl;
+    exit(EXIT_FAILURE);
+  }
 }
 
 auto main() -> int {
@@ -119,6 +131,20 @@ auto main() -> int {
       .seq_len = 53,
       .head_embd = 69,
   });
+
+  // current development
+  // {
+  //   AttentionParameters params{
+  //       .batch_size = 1,
+  //       .num_heads = 1,
+  //       .seq_len = 64,
+  //       .head_embd = 32,
+  //   };
+  //   // std::cout << "testing async" << std::endl;
+  //   // auto [q, k, v] = generate_data(params);
+  //   // // auto manual_result = manual_attn(q, k, v);
+  //   // flash::forward(q, k, v, flash::KernelType::block_wmma_async);
+  // }
 
   // # GPT2 parameters. Slower if seq_len is too big.
   // AttentionParameters params{

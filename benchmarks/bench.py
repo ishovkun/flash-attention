@@ -63,3 +63,7 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRow
 with torch.autograd.profiler.profile(use_device='cuda') as prof:
     O = pyflash.block_wmma_sync(q, k, v)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+
+with torch.autograd.profiler.profile(use_device='cuda') as prof:
+    O = pyflash.block_wmma_async(q, k, v)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))

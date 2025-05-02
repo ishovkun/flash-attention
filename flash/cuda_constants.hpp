@@ -1,3 +1,4 @@
+#pragma once
 #include <mma.h>
 
 namespace flash::constants {

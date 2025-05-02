@@ -6,7 +6,6 @@
 
 namespace flash {
 
-// using namespace flash::constants;
 using namespace nvcuda;
 
 __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,

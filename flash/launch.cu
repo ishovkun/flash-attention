@@ -1,9 +1,11 @@
+#include "common.hpp"
+#include "cuda_constants.hpp"
 #include "launch.hpp"
 #include <iostream>
 #include <sstream>
-#include <thrust/device_vector.h>
-#include "cuda_constants.hpp"
-#include "common.hpp"
+#include <stdexcept>
+// #include <thrust/device_vector.h>
+#include "KernelParameters.hpp"
 
 namespace flash {
 
@@ -33,65 +35,72 @@ __global__ void block_wmma_sync(float const *__restrict__ Q,
                                 float *__restrict__ l, float *__restrict__ m,
                                 float *__restrict__ O);
 
-#define INVALID_ARGUMENT(msg)                                                  \
-  {                                                                            \
-    std::ostringstream err;                                                    \
-    err << __FILE__ << "(" << __LINE__ << ") "                                 \
-        << "error : " << msg;                                                  \
-    throw std::invalid_argument(err.str());                                    \
-  }
+__global__ void block_wmma_async(float const *__restrict__ Q,
+                                 float const *__restrict__ K,
+                                 float const *__restrict__ V, int N, int d,
+                                 int Bc, int Br, float softmax_scale,
+                                 float *__restrict__ l, float *__restrict__ m,
+                                 float *__restrict__ O);
 
-static int maxTileSizeForDeviceSharedMemory(int head_dim) {
-  /*
-   * We compute the tile size assuming the maximum use of shared memory.
-   * This is done by solving a quadratic equation:
-   * sh_size = 3*Bc*d + (Bc*Br) -> solve for Bc
-   * Assume Bc = Br = x
-   * x = (sqrt(9*d*d + 4*m) - 3*d)/2
-   */
-  int max_sram_size;
-  cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-  int const c = max_sram_size / sizeof(float);
-  int d = head_dim;
-  const int tileSize = floor((sqrt(9. * d * d + 4. * c) - 3. * d) / 2.);
-  return tileSize;
-}
+// #define INVALID_ARGUMENT(msg)                                                  \
+//   {                                                                            \
+//     std::ostringstream err;                                                    \
+//     err << __FILE__ << "(" << __LINE__ << ") "                                 \
+//         << "error : " << msg;                                                  \
+//     throw std::invalid_argument(err.str());                                    \
+//   }
 
-static int selectTileSize(int d, KernelType kernelType) {
-  using namespace flash::constants;
-  switch (kernelType) {
-  case KernelType::naive1D: {
-    return std::min(maxTileSizeForDeviceSharedMemory(d), maxBlockSize);
-  }
-  case KernelType::scalar2D:
-    return std::min(maxTileSizeForDeviceSharedMemory(d),
-                    maxBlockSize / warpSize);
-  case KernelType::warp_wmma_sync:
-    return constants::WMMA_M;
-  case KernelType::block_wmma_sync:
-    return std::min(maxTileSizeForDeviceSharedMemory(d),
-                    maxBlockSize / warpSize);
-  default: {
-    INVALID_ARGUMENT("Unsupported kernel type");
-  }
-  }
-}
+// static int maxTileSizeForDeviceSharedMemory(int head_dim) {
+//   /*
+//    * We compute the tile size assuming the maximum use of shared memory.
+//    * This is done by solving a quadratic equation:
+//    * sh_size = 3*Bc*d + (Bc*Br) -> solve for Bc
+//    * Assume Bc = Br = x
+//    * x = (sqrt(9*d*d + 4*m) - 3*d)/2
+//    */
+//   int max_sram_size;
+//   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+//   int const c = max_sram_size / sizeof(float);
+//   int d = head_dim;
+//   const int tileSize = floor((sqrt(9. * d * d + 4. * c) - 3. * d) / 2.);
+//   return tileSize;
+// }
 
-static dim3 selectBlockDim(int tileSize, KernelType kernelType) {
-  switch (kernelType) {
-  case KernelType::naive1D:
-    return tileSize;
-  case KernelType::scalar2D:
-    return dim3(tileSize, constants::warpSize);
-  case KernelType::warp_wmma_sync:
-    return constants::warpSize;
-  case KernelType::block_wmma_sync:
-    return dim3(tileSize, constants::warpSize);
-  default: {
-    INVALID_ARGUMENT("Unsupported kernel type");
-  }
-  }
-}
+// static int selectTileSize(int d, KernelType kernelType) {
+//   using namespace flash::constants;
+//   switch (kernelType) {
+//   case KernelType::naive1D:
+//     return std::min(maxTileSizeForDeviceSharedMemory(d), maxBlockSize);
+//   case KernelType::scalar2D:
+//     return std::min(maxTileSizeForDeviceSharedMemory(d),
+//                     maxBlockSize / warpSize);
+//   case KernelType::warp_wmma_sync:
+//     return constants::WMMA_M;
+//   case KernelType::block_wmma_sync:
+//     return std::min(maxTileSizeForDeviceSharedMemory(d),
+//                     maxBlockSize / warpSize);
+//   case KernelType::block_wmma_async:
+//     return std::min(maxTileSizeForDeviceSharedMemory(d),
+//                     maxBlockSize / warpSize);
+//   default: { INVALID_ARGUMENT("Unsupported kernel type"); }
+//   }
+// }
+
+// static dim3 selectBlockDim(int tileSize, KernelType kernelType) {
+//   switch (kernelType) {
+//   case KernelType::naive1D:
+//     return tileSize;
+//   case KernelType::scalar2D:
+//     return dim3(tileSize, constants::warpSize);
+//   case KernelType::warp_wmma_sync:
+//     return constants::warpSize;
+//   case KernelType::block_wmma_sync:
+//     return dim3(tileSize, constants::warpSize);
+//   case KernelType::block_wmma_async:
+//     return dim3(tileSize, constants::warpSize);
+//   default: { INVALID_ARGUMENT("Unsupported kernel type"); }
+//   }
+// }
 
 static void checkRequestedSharedMemory(int requested_shared_memory) {
   int max_sram_size;
@@ -120,12 +129,14 @@ static inline void gpuAssert(cudaError_t code, const char *file, int line,
   }
 }
 
-static inline int selectPadding(int d, KernelType kernelType) {
-  if (kernelType == KernelType::warp_wmma_sync ||
-      kernelType == KernelType::block_wmma_sync)
-    return  common::nextMultiple(d, constants::WMMA_N);
-  else return d;
-}
+// static inline int selectPadding(int d, KernelType kernelType) {
+//   if (kernelType == KernelType::warp_wmma_sync ||
+//       kernelType == KernelType::block_wmma_sync ||
+//       kernelType == KernelType::block_wmma_async)
+//     return common::nextMultiple(d, constants::WMMA_N);
+//   else
+//     return d;
+// }
 
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                       KernelType kernelType) {
@@ -134,12 +145,15 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   const int N = Q.size(2);  // sequence length
   const int d = Q.size(3);  // head dimension
 
-  auto const d_pad = selectPadding(d, kernelType);
+  // auto const d_pad = selectPadding(d, kernelType);
+  auto kernelParams = FlashKernelParametersFactory::create(d, kernelType);
 
-  auto const tileSize = selectTileSize(d_pad, kernelType);
+  // auto const tileSize = selectTileSize(d_pad, kernelType);
+  auto const tileSize = kernelParams->tileSize();
+  std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << std::endl;
 
-  auto const Bc = tileSize;
-  auto const Br = tileSize;
+  auto const Bc = tileSize.x;
+  auto const Br = tileSize.y;
 
   const float softmax_scale = 1.0 / sqrt(d);
 
@@ -147,16 +161,16 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto O = torch::zeros_like(Q);
 
   float *l, *m;
-  cudaMalloc(&l, B*nh*N*sizeof(float));
-  cudaMalloc(&m, B*nh*N*sizeof(float));
+  cudaMalloc(&l, B * nh * N * sizeof(float));
+  cudaMalloc(&m, B * nh * N * sizeof(float));
 
   // Calculate SRAM size needed per block
-  int const sram_size = (3 * Bc * d_pad * sizeof(float)) + (Bc * Br * sizeof(float));
-  checkRequestedSharedMemory(sram_size);
+  // int const sram_size = (3 * Bc * d_pad * sizeof(float)) + (Bc * Br * sizeof(float));
+  auto const sramSize = kernelParams->sramSize();
+  checkRequestedSharedMemory(sramSize);
 
   dim3 gridDim(B, nh); // batch_size x num_heads
-  // dim3 gridDim(1, 1); // batch_size x num_heads
-  dim3 blockDim = selectBlockDim(tileSize, kernelType);
+  auto const blockDim = kernelParams->blockDim();
   std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
 
   // number of tiles in K/V and Q, respectively
@@ -166,31 +180,34 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   // launch kernel
   switch (kernelType) {
   case KernelType::naive1D: {
-    naive_forward_kernel<<<gridDim, blockDim, sram_size>>>(
+    naive_forward_kernel<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l, m,
-        O.data_ptr<float>());
+        Tr, Bc, Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   }
   case KernelType::scalar2D:
-    forward_kernel_2d<<<gridDim, blockDim, sram_size>>>(
+    forward_kernel_2d<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   case KernelType::warp_wmma_sync: {
-    warp_wmma_sync<<<gridDim, blockDim, sram_size>>>(
+    warp_wmma_sync<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Tc,
-        Tr, Bc, Br, softmax_scale, l, m,
-        O.data_ptr<float>());
+        Tr, Bc, Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   }
   case KernelType::block_wmma_sync:
-    block_wmma_sync<<<gridDim, blockDim, sram_size>>>(
+    block_wmma_sync<<<gridDim, blockDim, sramSize>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
+        Br, softmax_scale, l, m, O.data_ptr<float>());
+    break;
+  case KernelType::block_wmma_async:
+    block_wmma_async<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;
   default:
-    INVALID_ARGUMENT("Unsupported kernel type");
+    throw std::invalid_argument("Unsupported kernel type");
   }
   cudaFree(l);
   cudaFree(m);

@@ -3,8 +3,8 @@
 #include <cmath>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <iostream>
 #include <mma.h>
+#include <iostream>
 
 namespace flash {
 
@@ -32,6 +32,7 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
   // padded dimension d for wmma alignment
   auto dp = common::nextMultiple(d, constants::WMMA_N);
 
+  // shared memory for tiles
   extern __shared__ float sram[];
   float *_Q = sram;                     // size = Br x d
   float *_K = &sram[Br * dp];            // size = Bc x d
@@ -65,7 +66,7 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
       auto i = iStart + ii;
 
       // Load Qi
-      for (int k = tx; k < d; k += blockDim.x) {
+      for (int k = tx; k < dp; k += blockDim.x) {
         auto inBounds = i < N && k < d;
         _Q[ii * dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
       }
@@ -130,7 +131,7 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
       float row_m_new = common::float_max(row_m_prev, row_m);
       float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                         __expf(row_m - row_m_new) * row_l;
-      __syncthreads();
+      // __syncthreads();
 
       // compute pv[i,k] = P[i,j] * V[k,j]
       constants::fragA_t p_frag;
