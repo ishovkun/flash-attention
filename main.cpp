@@ -80,6 +80,9 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("Scalar 2D block", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::scalar2D);
   });
+  ret &= run_and_compare("Scalar 2D row tile", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::scalar2D_row_tile);
+  });
   ret &= run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
   });

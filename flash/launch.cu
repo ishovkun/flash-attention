@@ -1,10 +1,10 @@
+#include "KernelParameters.hpp"
 #include "common.hpp"
 #include "cuda_constants.hpp"
 #include "launch.hpp"
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
-#include "KernelParameters.hpp"
 
 namespace flash {
 
@@ -20,6 +20,13 @@ __global__ void forward_kernel_2d(float const *__restrict__ Q,
                                   int Bc, int Br, float softmax_scale,
                                   float *__restrict__ l, float *__restrict__ m,
                                   float *__restrict__ O);
+
+__global__ void
+forward_kernel_2d_row_tile(float const *__restrict__ Q,
+                           float const *__restrict__ K,
+                           float const *__restrict__ V, int N, int d, int Bc,
+                           int Br, float softmax_scale, float *__restrict__ l,
+                           float *__restrict__ m, float *__restrict__ O);
 
 __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
                                const int N, const int d, const int Tc,
@@ -58,11 +65,10 @@ __global__ void block_wmma_async(float const *__restrict__ Q,
 //    * x = (sqrt(9*d*d + 4*m) - 3*d)/2
 //    */
 //   int max_sram_size;
-//   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-//   int const c = max_sram_size / sizeof(float);
-//   int d = head_dim;
-//   const int tileSize = floor((sqrt(9. * d * d + 4. * c) - 3. * d) / 2.);
-//   return tileSize;
+//   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock,
+//   0); int const c = max_sram_size / sizeof(float); int d = head_dim; const
+//   int tileSize = floor((sqrt(9. * d * d + 4. * c) - 3. * d) / 2.); return
+//   tileSize;
 // }
 
 // static int selectTileSize(int d, KernelType kernelType) {
@@ -104,8 +110,9 @@ __global__ void block_wmma_async(float const *__restrict__ Q,
 static void checkRequestedSharedMemory(int requested_shared_memory) {
   int max_sram_size;
   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-  // std::cout << "Requested shared memory: " << requested_shared_memory << std::endl;
-  // std::cout << "Maximum Shared memory: " << max_sram_size << std::endl;
+  // std::cout << "Requested shared memory: " << requested_shared_memory <<
+  // std::endl; std::cout << "Maximum Shared memory: " << max_sram_size <<
+  // std::endl;
   if (requested_shared_memory > max_sram_size) {
     std::cerr << "Requested shared memory " << requested_shared_memory
               << " exceeds maximum allowed (" << max_sram_size << ")"
@@ -147,11 +154,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   const int d = Q.size(3);  // head dimension
 
   // auto const d_pad = selectPadding(d, kernelType);
-  auto kernelParams = FlashKernelParametersFactory::create(d, kernelType);
+  auto kernelParams = FlashKernelParametersFactory::create(B, nh, N, d, kernelType);
 
   // auto const tileSize = selectTileSize(d_pad, kernelType);
   auto const tileSize = kernelParams->tileSize();
-  std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << std::endl;
+  // std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << std::endl;
 
   auto const Br = tileSize.y;
   auto const Bc = tileSize.x;
@@ -169,9 +176,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto const sramSize = kernelParams->sramSize();
   checkRequestedSharedMemory(sramSize);
 
-  dim3 gridDim(B, nh); // batch_size x num_heads
+  auto const gridDim = kernelParams->gridDim();
   auto const blockDim = kernelParams->blockDim();
-  std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
+
+  // std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y << ", " << gridDim.z << std::endl;
+  // std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
 
   // number of tiles in K/V and Q, respectively
   auto const Tc = common::ceil_div(N, Bc);
@@ -187,6 +196,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   }
   case KernelType::scalar2D:
     forward_kernel_2d<<<gridDim, blockDim, sramSize>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
+        Br, softmax_scale, l, m, O.data_ptr<float>());
+    break;
+  case KernelType::scalar2D_row_tile:
+    forward_kernel_2d_row_tile<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;

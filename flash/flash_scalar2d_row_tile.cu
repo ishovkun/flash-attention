@@ -5,17 +5,17 @@
 
 namespace flash {
 
-__global__ void
-forward_kernel_2d(float const *__restrict__ Q, // query vector
-                  float const *__restrict__ K, // key vector
-                  float const *__restrict__ V, // value vector
-                  int N,                       // sequence length
-                  int d,                       // head_dim
-                  int Bc, int Br,        // column tile size and row tile size
-                  float softmax_scale,   // 1/sqrt(d)
-                  float *__restrict__ l, // storage temp for row \sum exp(S)
-                  float *__restrict__ m, // storage temp for row \max S
-                  float *__restrict__ O) // output attention
+__global__ void forward_kernel_2d_row_tile(
+    float const *__restrict__ Q, // query vector
+    float const *__restrict__ K, // key vector
+    float const *__restrict__ V, // value vector
+    int N,                       // sequence length
+    int d,                       // head_dim
+    int Bc, int Br,              // column tile size and row tile size
+    float softmax_scale,         // 1/sqrt(d)
+    float *__restrict__ l,       // storage temp for row \sum exp(S)
+    float *__restrict__ m,       // storage temp for row \max S
+    float *__restrict__ O)       // output attention
 {
   auto batch = blockIdx.x;
   auto head = blockIdx.y;
@@ -32,16 +32,30 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
 
   auto tx = threadIdx.x;
   auto ty = threadIdx.y;
+  auto warp = ty;
+  auto const numWarps = blockDim.y;
+
+  auto startI = blockIdx.z * Br;
+  auto Brc = min(Br, N - startI);
+  auto endI = min(startI + Br, N);
 
   // set l and m to default values
-  for (int i = ty * blockDim.x + tx; i < N; i += blockDim.x * blockDim.y) {
+  for (int i = startI + ty * blockDim.x + tx; i < endI; i += blockDim.x * blockDim.y) {
     l[lm_offset + i] = 0.f;
     m[lm_offset + i] = -INFINITY;
+  }
+
+  for (int ii = warp; ii < Brc; ii += numWarps) {
+    auto i = startI + ii;
+    for (int k = tx; k < d; k += blockDim.x) {
+      Qi[ii * d + k] = Q[qkv_offset + i * d + k];
+    }
   }
 
   for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
     // Potentially cropped Bc in the last tile
     auto Bcc = min(Bc, N - jStart);
+
     // load Kj, Vj
     for (int k = tx; k < d; k += blockDim.x) {
       auto jj = ty;
@@ -49,18 +63,12 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       Kj[jj * d + k] = (j < N) ? K[qkv_offset + j * d + k] : 0.f;
       Vj[jj * d + k] = (j < N) ? V[qkv_offset + j * d + k] : 0.f;
     }
-    // __syncthreads();
+    __syncthreads();
 
-    for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
-      auto ii = ty;
-      auto i = iStart + ii;
+    // Compute Sij and row_max
+    for (int ii = warp; ii < Brc; ii += numWarps) {
+      auto i = startI + ii;
 
-      // Load Qi
-      for (int k = tx; k < d; k += blockDim.x)
-        Qi[ii * d + k] = (i < N) ? Q[qkv_offset + i * d + k] : 0.f;
-      // __syncthreads();// -- not needed
-
-      // Compute Sij and row_max
       float row_m = -INFINITY;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
         float Sij = 0.f;
@@ -69,14 +77,10 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
         }
         Sij *= softmax_scale;
         S[Bc * ii + jj] = Sij;
-        // track row maximum
         row_m = common::float_max(row_m, Sij);
       }
-
-      // take max over row (j dimention)
       row_m = common::warpReduce<common::float_max>(row_m);
 
-      // S = [Br x Bc]
       float row_l = 0.f;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
         float Sij = __expf(S[Bc * ii + jj] - row_m);
@@ -85,13 +89,11 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       }
       row_l = common::warpReduce<common::float_add>(row_l);
 
-      float row_m_prev = (i < N) ? m[lm_offset + i] : -INFINITY;
-      float row_l_prev = (i < N) ? l[lm_offset + i] : 0.f;
+      float row_m_prev = m[lm_offset + i];
+      float row_l_prev = l[lm_offset + i];
       float row_m_new = common::float_max(row_m_prev, row_m);
       float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                         __expf(row_m - row_m_new) * row_l;
-
-      // __syncthreads(); -- no need <= there is only one warp in j direction
 
       // Product Oik = Pin * Vnk
       // O[Br,d] = S[Br, Bc] * V[Bc, d]
@@ -100,23 +102,22 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
         for (int n = 0; n < Bc; n++) {
           PinVnk += S[Bc * ii + n] * Vj[n * d + k];
         }
-        if (i < N)
-          O[qkv_offset + i * d + k] =
-              ((row_l_prev * __expf(row_m_prev - row_m_new) *
-                O[qkv_offset + i * d + k]) +
-               (__expf(row_m - row_m_new) * PinVnk)) /
-              row_l_new;
-      }
+        O[qkv_offset + i * d + k] =
+            ((row_l_prev * __expf(row_m_prev - row_m_new) *
+              O[qkv_offset + i * d + k]) +
+             (__expf(row_m - row_m_new) * PinVnk)) /
+            row_l_new;
 
-      // save new l and m
-      if (tx == 0 && i < N) {
-        m[lm_offset + i] = row_m_new;
-        l[lm_offset + i] = row_l_new;
+        // save new l and m
+        if (tx == 0 && i < N) {
+          m[lm_offset + i] = row_m_new;
+          l[lm_offset + i] = row_l_new;
+        }
       }
-    } // end i-tile loop
+    }
 
     __syncthreads();
   }
 }
 
-} // namespace flash
+}

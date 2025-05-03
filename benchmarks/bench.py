@@ -23,6 +23,7 @@ batch_size = 8
 num_heads = 12
 seq_len = 1024
 head_embd = 64
+profiler_print_cuda_time_only = True
 
 torch.manual_seed(0)
 q = torch.randn(batch_size, num_heads, seq_len, head_embd).cuda()
@@ -36,35 +37,28 @@ def manual_attn(q, k, v):
     y = att @ v
     return y
 
-# cold run the kernels before profiling
+# warmup run the kernels before profiling
 manual_result = manual_attn(q, k, v)
 naive_result = pyflash.naive(q, k, v)
 scalar_2d_result = pyflash.scalar2d(q, k, v)
+scalar_2d_row_tile_result = pyflash.scalar2d_row_tile(q, k, v)
 warp_wmma_sync_result = pyflash.warp_wmma_sync(q, k, v)
 block_wmma_sync_result = pyflash.block_wmma_sync(q, k, v)
 block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
 
-with profiler.profile(use_device='cuda') as prof:
-    O = manual_attn(q, k, v)
-    # print(prof.key_averages().table())
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+def profile_kernel(kernel, q, k, v, gpu_time_only):
+    with profiler.profile(use_device='cuda') as prof:
+        O = kernel(q, k, v)
+    if not gpu_time_only:
+        print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+    else:
+        total_gpu_time_us = sum([item.self_device_time_total for item in prof.key_averages()])
+        print("{}: {} ms".format(kernel.__name__, total_gpu_time_us / 1e3))
 
-with profiler.profile(use_device='cuda') as prof:
-    O = pyflash.naive(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
-
-with profiler.profile(use_device='cuda') as prof:
-    O = pyflash.scalar2d(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
-
-with torch.autograd.profiler.profile(use_device='cuda') as prof:
-    O = pyflash.warp_wmma_sync(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
-
-with torch.autograd.profiler.profile(use_device='cuda') as prof:
-    O = pyflash.block_wmma_sync(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
-
-with torch.autograd.profiler.profile(use_device='cuda') as prof:
-    O = pyflash.block_wmma_async(q, k, v)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=profilerRowLimit))
+profile_kernel(manual_attn, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.naive, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.scalar2d, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.scalar2d_row_tile, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.warp_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.block_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.block_wmma_async, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
