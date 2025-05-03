@@ -42,6 +42,7 @@ naive_result = pyflash.naive(q, k, v)
 scalar_2d_result = pyflash.scalar2d(q, k, v)
 warp_wmma_sync_result = pyflash.warp_wmma_sync(q, k, v)
 block_wmma_sync_result = pyflash.block_wmma_sync(q, k, v)
+block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
 
 with profiler.profile(use_device='cuda') as prof:
     O = manual_attn(q, k, v)

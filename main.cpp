@@ -17,12 +17,9 @@ auto manual_attn(auto q, auto k, auto v) {
 
 auto generate_data(auto const &p) {
   torch::manual_seed(0);
-  auto q =
-      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
-  auto k =
-      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
-  auto v =
-      torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto q = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto k = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
+  auto v = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
   return std::make_tuple(q, k, v);
 }
 
@@ -89,9 +86,9 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
   });
-  // ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
-  //   return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
-  // });
+  ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
+  });
   if (!ret) {
     std::cout << "Test failed!" << std::endl;
     exit(EXIT_FAILURE);
@@ -112,8 +109,8 @@ auto main() -> int {
   test_alg(AttentionParameters{
       .batch_size = 1,
       .num_heads = 1,
-      .seq_len = 33,
-      .head_embd = 64,
+      .seq_len = 100, // larger than tile size
+      .head_embd = 32,
   });
 
   // unaligned head embedding dim

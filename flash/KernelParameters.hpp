@@ -7,6 +7,8 @@
 
 namespace flash {
 
+constexpr int maxWarpsPerBlock = constants::maxBlockSize / constants::warpSize;
+
 static inline int maxTileSizeForDeviceSharedMemory(int head_dim) {
   /*
     * We compute the tile size assuming the maximum use of shared memory.
@@ -24,7 +26,7 @@ static inline int maxTileSizeForDeviceSharedMemory(int head_dim) {
 }
 
 static uint sramSizeForTiles(int d, int Br, int Bc) {
-  return (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+  return (3*Bc*d + Br*Bc) * sizeof(float);
 }
 
 class KernelParameters {
@@ -40,15 +42,18 @@ class NaiveKernelParameters : public KernelParameters {
 public:
   NaiveKernelParameters(int head_dimension)
   : d(head_dimension) {}
+
   dim3 tileSize() {
     auto ts = std::min(maxTileSizeForDeviceSharedMemory(d),
                       constants::maxBlockSize);
     return dim3(ts, ts);
   }
+
   uint sramSize() {
     auto ts = tileSize();
     return sramSizeForTiles(d, ts.x, ts.y);
   }
+
   dim3 blockDim() {
     return dim3(tileSize().x, 1);
   }
@@ -59,18 +64,20 @@ class Scalar2DKernelParameters : public KernelParameters {
 public:
   Scalar2DKernelParameters(int head_dimension)
   : d(head_dimension) {}
+
   dim3 tileSize() {
-    auto ts = std::min(maxTileSizeForDeviceSharedMemory(d),
-                        constants::maxBlockSize / constants::warpSize);
+    auto ts = std::min(maxTileSizeForDeviceSharedMemory(d), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
+
   uint sramSize() {
     auto ts = tileSize();
     return sramSizeForTiles(d, ts.x, ts.y);
   }
+
   dim3 blockDim() {
     auto ts = tileSize();
-    return dim3(std::max(ts.x, ts.y), constants::warpSize);
+    return dim3(constants::warpSize, std::max(ts.x, ts.y));
   }
 };
 
@@ -99,18 +106,20 @@ public:
   BlockWMMASyncKernelParameters(int head_dimension)
   : d(common::nextMultiple(head_dimension, constants::WMMA_N))
   {}
+
   dim3 tileSize() {
-    auto ts = std::min(maxTileSizeForDeviceSharedMemory(d),
-                    constants::maxBlockSize / constants::warpSize);
+    auto ts = std::min(maxTileSizeForDeviceSharedMemory(d), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
+
   uint sramSize() {
     auto ts = tileSize();
     return sramSizeForTiles(d, ts.x, ts.y);
   }
+
   dim3 blockDim() {
     auto ts = tileSize();
-    return dim3(max(ts.x, ts.y), constants::warpSize);
+    return dim3(constants::warpSize, max(ts.x, ts.y));
   }
 };
 
@@ -121,17 +130,35 @@ public:
   : d(common::nextMultiple(head_dimension, constants::WMMA_N))
   {}
   dim3 tileSize() {
-    auto ts = std::min(maxTileSizeForDeviceSharedMemory(d),
-                    constants::maxBlockSize / constants::warpSize);
-    return dim3(ts, ts);
+    // x = Bc = Br
+    // 3*x*d + x^2 + x = M
+    // solve for x: x^2 + (3*d + 1)*x - M = 0
+    // x = 1/2 * ( sqrt(9*d*d + 6*d + 4*M + 1) - 3*d - 1)
+    int M;
+    cudaDeviceGetAttribute(&M, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+    M /= sizeof(float);
+    auto ts = floor(0.5 * ( sqrt(9.*d*d + 6.*d + 4.*M + 1.) - 3.*d - 1.));
+
+    // must be a multiple of WMMA_M
+    auto ts_y = (int)(ts / constants::WMMA_M) * constants::WMMA_M;
+    auto ts_x = (int)(ts / constants::WMMA_N) * constants::WMMA_N;
+
+    return dim3(ts_x, ts_y);
   }
   uint sramSize() {
     auto ts = tileSize();
-    return sramSizeForTiles(d, ts.x, ts.y);
+    auto Bc = ts.x;
+    auto Br = ts.y;
+    // 3*x*d + x^2 + x = M
+    return sramSizeForTiles(d, Br, Bc) + Bc*sizeof(float);
   }
+
   dim3 blockDim() {
     auto ts = tileSize();
-    return dim3(max(ts.x, ts.y), constants::warpSize);
+    // auto nWarps = max(ts.x, ts.y);
+    auto nWarps = 6;
+    nWarps = min(nWarps, maxWarpsPerBlock);
+    return dim3(constants::warpSize, nWarps);
   }
 };
 

@@ -4,7 +4,6 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
-// #include <thrust/device_vector.h>
 #include "KernelParameters.hpp"
 
 namespace flash {
@@ -105,6 +104,8 @@ __global__ void block_wmma_async(float const *__restrict__ Q,
 static void checkRequestedSharedMemory(int requested_shared_memory) {
   int max_sram_size;
   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+  // std::cout << "Requested shared memory: " << requested_shared_memory << std::endl;
+  // std::cout << "Maximum Shared memory: " << max_sram_size << std::endl;
   if (requested_shared_memory > max_sram_size) {
     std::cerr << "Requested shared memory " << requested_shared_memory
               << " exceeds maximum allowed (" << max_sram_size << ")"
@@ -152,8 +153,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto const tileSize = kernelParams->tileSize();
   std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << std::endl;
 
-  auto const Bc = tileSize.x;
   auto const Br = tileSize.y;
+  auto const Bc = tileSize.x;
 
   const float softmax_scale = 1.0 / sqrt(d);
 
@@ -165,7 +166,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   cudaMalloc(&m, B * nh * N * sizeof(float));
 
   // Calculate SRAM size needed per block
-  // int const sram_size = (3 * Bc * d_pad * sizeof(float)) + (Bc * Br * sizeof(float));
   auto const sramSize = kernelParams->sramSize();
   checkRequestedSharedMemory(sramSize);
 

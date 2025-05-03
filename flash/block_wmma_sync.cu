@@ -26,8 +26,8 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
   int head = blockIdx.y;  // head index
   int numHeads = gridDim.y;
 
-  int qkv_offset = (batch * numHeads * N * d) + (head * N * d);     // gridDim.y = nh
-  int lm_offset = (batch * numHeads * N) + (head * N); // offset for l and m
+  int qkv_offset = (batch * numHeads + head) * N * d;
+  int lm_offset = (batch * numHeads + head) * N;
 
   // padded dimension d for wmma alignment
   auto dp = common::nextMultiple(d, constants::WMMA_N);
@@ -41,6 +41,7 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
 
   auto tx = threadIdx.x;
   auto ty = threadIdx.y;
+  int warp = ty;
 
   // set l and m to default values
   for (int i = ty*blockDim.x + tx; i < N; i += blockDim.x*blockDim.y) {
@@ -82,7 +83,6 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
       auto numSubtilesJ = common::ceil_div(Bc, constants::WMMA_N);
       auto numSubtilesQK = numSubtilesI * numSubtilesJ;
       auto numWarps = blockDim.y;
-      int warp = ty;
       for (int subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
         fill_fragment(s_frag, 0.f);
         auto subtileI = subTile / numSubtilesJ;
@@ -148,8 +148,8 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
         auto ii = subtileI * constants::WMMA_M;
         auto k = subtileK * constants::WMMA_N;
         for (int jj = 0; jj < Bc; jj += constants::WMMA_K) {
-          wmma::load_matrix_sync(p_frag, &_S[ii * Bc + jj], Bc); // S: Br x Bc
-          wmma::load_matrix_sync(v_frag, &_V[jj * dp + k], dp);    // V: Bc x d
+          wmma::load_matrix_sync(p_frag, &_S[ii * Bc + jj], Bc); // P: Br x Bc
+          wmma::load_matrix_sync(v_frag, &_V[jj * dp + k], dp);  // V: Bc x d
 
           // Works without it so IDK
           for (int t = 0; t < p_frag.num_elements; t++)
@@ -170,8 +170,7 @@ block_wmma_sync(float const *__restrict__ Q, // query vector
           O[qkv_offset + i * d + k] =
               ((row_l_prev * __expf(row_m_prev - row_m_new) *
                 O[qkv_offset + i * d + k]) +
-               (__expf(row_m - row_m_new) * _PV[ii * dp + k])) /
-              row_l_new;
+               (__expf(row_m - row_m_new) * _PV[ii * dp + k])) / row_l_new;
         }
         if (tx == 0) {
           m[lm_offset + i] = row_m_new;
