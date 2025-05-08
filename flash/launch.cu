@@ -1,6 +1,6 @@
 #include "KernelParameters.hpp"
 #include "common.hpp"
-#include "cuda_constants.hpp"
+#include "wmma.hpp"
 #include "launch.hpp"
 #include <iostream>
 #include <sstream>
@@ -40,6 +40,13 @@ __global__ void block_wmma_sync(float const *__restrict__ Q,
                                 int Bc, int Br, float softmax_scale,
                                 float *__restrict__ l, float *__restrict__ m,
                                 float *__restrict__ O);
+
+__global__ void wmma_sync_rowblock(float const *__restrict__ Q,
+                                 float const *__restrict__ K,
+                                 float const *__restrict__ V, int N, int d,
+                                 int Bc, int Br, float softmax_scale,
+                                 float *__restrict__ l, float *__restrict__ m,
+                                 float *__restrict__ O);
 
 __global__ void block_wmma_async(float const *__restrict__ Q,
                                  float const *__restrict__ K,
@@ -154,7 +161,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   const int d = Q.size(3);  // head dimension
 
   // auto const d_pad = selectPadding(d, kernelType);
-  auto kernelParams = FlashKernelParametersFactory::create(B, nh, N, d, kernelType);
+  auto kernelParams =
+      FlashKernelParametersFactory::create(B, nh, N, d, kernelType);
 
   // auto const tileSize = selectTileSize(d_pad, kernelType);
   auto const tileSize = kernelParams->tileSize();
@@ -179,8 +187,9 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto const gridDim = kernelParams->gridDim();
   auto const blockDim = kernelParams->blockDim();
 
-  // std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y << ", " << gridDim.z << std::endl;
   // std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
+  // std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y << ", "
+  //           << gridDim.z << std::endl;
 
   // number of tiles in K/V and Q, respectively
   auto const Tc = common::ceil_div(N, Bc);
@@ -212,6 +221,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   }
   case KernelType::block_wmma_sync:
     block_wmma_sync<<<gridDim, blockDim, sramSize>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
+        Br, softmax_scale, l, m, O.data_ptr<float>());
+    break;
+  case KernelType::wmma_sync_row_block:
+    wmma_sync_rowblock<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;

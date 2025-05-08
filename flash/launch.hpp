@@ -1,5 +1,6 @@
 #pragma once
 #include <torch/torch.h>
+#include <stdexcept>
 
 namespace flash {
 

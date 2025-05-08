@@ -30,23 +30,24 @@ __global__ void forward_kernel_2d_row_tile(
   float *Vj = &sram[d * (Bc + Br)];    // size = Bc x d
   float *S = &sram[d * (Br + 2 * Bc)]; // size = Br x Bc
 
-  auto tx = threadIdx.x;
-  auto ty = threadIdx.y;
-  auto warp = ty;
+  auto const tx = threadIdx.x;
+  auto const ty = threadIdx.y;
+  auto const warp = ty;
   auto const numWarps = blockDim.y;
 
-  auto startI = blockIdx.z * Br;
-  auto Brc = min(Br, N - startI);
-  auto endI = min(startI + Br, N);
+  auto const iStart = blockIdx.z * Br;
+  auto const iEnd = min(iStart + Br, N);
+  auto const Brc = min(Br, N - iStart);
 
   // set l and m to default values
-  for (int i = startI + ty * blockDim.x + tx; i < endI; i += blockDim.x * blockDim.y) {
+  for (int i = iStart + ty * blockDim.x + tx; i < iEnd; i += warpSize * numWarps) {
     l[lm_offset + i] = 0.f;
     m[lm_offset + i] = -INFINITY;
   }
 
+  // Load Q tile
   for (int ii = warp; ii < Brc; ii += numWarps) {
-    auto i = startI + ii;
+    auto i = iStart + ii;
     for (int k = tx; k < d; k += blockDim.x) {
       Qi[ii * d + k] = Q[qkv_offset + i * d + k];
     }
@@ -67,7 +68,7 @@ __global__ void forward_kernel_2d_row_tile(
 
     // Compute Sij and row_max
     for (int ii = warp; ii < Brc; ii += numWarps) {
-      auto i = startI + ii;
+      auto i = iStart + ii;
 
       float row_m = -INFINITY;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
@@ -109,7 +110,7 @@ __global__ void forward_kernel_2d_row_tile(
             row_l_new;
 
         // save new l and m
-        if (tx == 0 && i < N) {
+        if (tx == 0) {
           m[lm_offset + i] = row_m_new;
           l[lm_offset + i] = row_l_new;
         }

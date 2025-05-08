@@ -1,5 +1,5 @@
 #include "common.hpp"
-#include "cuda_constants.hpp"
+#include "wmma.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cuda.h>
@@ -9,8 +9,6 @@
 #include <mma.h>
 
 namespace flash {
-
-using namespace nvcuda;
 
 __global__ void
 block_wmma_async(float const *__restrict__ Q, // query vector
@@ -32,7 +30,7 @@ block_wmma_async(float const *__restrict__ Q, // query vector
   int lm_offset = (batch * numHeads + head) * N;
 
   // padded dimension d for wmma alignment
-  auto dp = common::nextMultiple(d, constants::WMMA_N);
+  auto dp = common::nextMultiple(d, wmma::WMMA_N);
 
   // shared memory for tiles
   extern __shared__ float sram[];
@@ -87,7 +85,7 @@ block_wmma_async(float const *__restrict__ Q, // query vector
       pipe.producer_acquire();
       for (int ii = warp; ii < Br; ii += numWarps) {
         auto i = iStart + ii;
-        for (int k = tx; k < dp; k += constants::warpSize) {
+        for (int k = tx; k < dp; k += common::warpSize) {
           auto inBounds = i < N && k < d;
           // _Q[ii * dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
           if (inBounds) {
@@ -102,22 +100,22 @@ block_wmma_async(float const *__restrict__ Q, // query vector
       __syncthreads();
 
       // Compute Sij
-      constants::fragA_t q_frag;    // (16x8) WMMA_M x WMMA_K, row_major
-      constants::fragB_cm_t k_frag; // (8x16) WMMA_K x WMMA_N, col_major
-      constants::fragC_t s_frag;    // (16x16) WMMA_M x WMMA_N, row_major
+      wmma::fragA_t q_frag;    // (16x8) WMMA_M x WMMA_K, row_major
+      wmma::fragB_cm_t k_frag; // (8x16) WMMA_K x WMMA_N, col_major
+      wmma::fragC_t s_frag;    // (16x16) WMMA_M x WMMA_N, row_major
 
       // Split Sij into numWarpsI x numWarpsJ
-      auto numSubtilesI = common::ceil_div(Br, constants::WMMA_M);
-      auto numSubtilesJ = common::ceil_div(Bc, constants::WMMA_N);
+      auto numSubtilesI = common::ceil_div(Br, wmma::WMMA_M);
+      auto numSubtilesJ = common::ceil_div(Bc, wmma::WMMA_N);
       auto numSubtilesQK = numSubtilesI * numSubtilesJ;
 
       for (int subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
         fill_fragment(s_frag, 0.f);
         auto subtileI = subTile / numSubtilesJ;
         auto subtileJ = subTile % numSubtilesJ;
-        auto ii = subtileI * constants::WMMA_M;
-        auto jj = subtileJ * constants::WMMA_N;
-        for (int k = 0; k < d; k += constants::WMMA_K) {
+        auto ii = subtileI * wmma::WMMA_M;
+        auto jj = subtileJ * wmma::WMMA_N;
+        for (int k = 0; k < d; k += wmma::WMMA_K) {
           wmma::load_matrix_sync(q_frag, &_Q[ii * dp + k], dp);
           wmma::load_matrix_sync(k_frag, &_K[jj * dp + k], dp);
 
@@ -138,6 +136,7 @@ block_wmma_async(float const *__restrict__ Q, // query vector
       }
       __syncthreads();
 
+      // P = exp(S)
       for (int ii = warp; ii < Br; ii += numWarps) {
         float row_m = -INFINITY;
         // compute row max
@@ -148,10 +147,6 @@ block_wmma_async(float const *__restrict__ Q, // query vector
         if (tx == 0) _m[ii] = row_m;
 
         // compute row sum and P = exp(Sij)
-        // for (int jj = tx; jj < Bcc; jj += blockDim.x) {
-        //   float Pij = __expf(_S[Bc * ii + jj] - row_m);
-        //   _S[Bc * ii + jj] = (iStart + ii < N) ? Pij : 0.f;
-        // }
         for (int jj = tx; jj < Bc; jj += blockDim.x) {
           float Pij = __expf(_S[Bc * ii + jj] - row_m);
           _S[Bc * ii + jj] = (iStart + ii < N && jj < Bcc) ? Pij : 0.f;
@@ -162,19 +157,19 @@ block_wmma_async(float const *__restrict__ Q, // query vector
       // compute pv[i,k] = P[i,j] * V[k,j]
       float *_PV = _Q; // reuse _Q to store PV
 
-      constants::fragA_t p_frag;
-      constants::fragB_rm_t v_frag;
-      constants::fragC_t pv_frag;
+      wmma::fragA_t p_frag;
+      wmma::fragB_rm_t v_frag;
+      wmma::fragC_t pv_frag;
 
-      auto numSubtilesK = dp / constants::WMMA_N;
+      auto numSubtilesK = dp / wmma::WMMA_N;
       auto numSubtilesPV = numSubtilesI * numSubtilesK;
       for (int subTile = warp; subTile < numSubtilesPV; subTile += numWarps) {
         fill_fragment(pv_frag, 0.f);
         auto subtileI = subTile / numSubtilesK;
         auto subtileK = subTile % numSubtilesK;
-        auto ii = subtileI * constants::WMMA_M;
-        auto k = subtileK * constants::WMMA_N;
-        for (int jj = 0; jj < Bc; jj += constants::WMMA_K) {
+        auto ii = subtileI * wmma::WMMA_M;
+        auto k = subtileK * wmma::WMMA_N;
+        for (int jj = 0; jj < Bc; jj += wmma::WMMA_K) {
           wmma::load_matrix_sync(p_frag, &_S[ii * Bc + jj], Bc); // P: Br x Bc
           wmma::load_matrix_sync(v_frag, &_V[jj * dp + k], dp);  // V: Bc x d
           for (int t = 0; t < p_frag.num_elements; t++)
@@ -205,10 +200,6 @@ block_wmma_async(float const *__restrict__ Q, // query vector
         float row_m_new = common::float_max(row_m_prev, row_m);
         float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                           __expf(row_m - row_m_new) * row_l;
-
-        if (i == 64) {
-          printf("I am here %d %d\n", tx, ty);
-        }
 
         // compute O
         for (int k = tx; k < d; k += blockDim.x) {

@@ -33,3 +33,11 @@ SET_TARGET_PROPERTIES (
     CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}"
     # CUDA_ARCHITECTURES  ${NUDFT_CUDA_ARCHITECTURES}
 )
+
+target_compile_options(${THIS} PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>: --generate-line-info
+                              --use_fast_math
+                              --expt-extended-lambda
+                              -std=c++20
+                              >
+)

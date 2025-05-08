@@ -1,4 +1,5 @@
 #include "flash/launch.hpp"
+#include <chrono>
 #include <torch/torch.h>
 
 struct AttentionParameters {
@@ -72,7 +73,7 @@ void test_alg(AttentionParameters const &params) {
   double atol = 1e-4;
   double rtol = 1e-2;
 
-   bool ret = true;
+  bool ret = true;
 
   ret &= run_and_compare("Naive", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::naive1D);
@@ -83,11 +84,15 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("Scalar 2D row tile", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::scalar2D_row_tile);
   });
-  ret &= run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
-  });
+  ret &=
+      run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
+        return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
+      });
   ret &= run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
+  });
+  ret &= run_and_compare("Block wmma sync 1", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::wmma_sync_row_block);
   });
   ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
@@ -98,39 +103,81 @@ void test_alg(AttentionParameters const &params) {
   }
 }
 
-auto main() -> int {
+auto time_kernel(auto const & q, auto const & k, auto const & v,
+                 flash::KernelType kernelType) {
+  using namespace std::chrono;
+  auto const start_time = high_resolution_clock::now();
+  flash::forward(q, k, v, kernelType);
+  auto const end_time = high_resolution_clock::now();
+  auto const duration = (duration_cast<milliseconds>(end_time - start_time)).count();
+  std::cout << "Benchmark \'" << to_string(kernelType) << "\'"
+            << " took " << (double)duration << " [ms]" << std::endl;
+}
 
-  // small aliged
-  test_alg(AttentionParameters{
-      .batch_size = 1,
-      .num_heads = 1,
-      .seq_len = 64,
-      .head_embd = 32,
-  });
+auto main(int argc, char *argv[]) -> int {
 
-  // unaligned seq len
-  test_alg(AttentionParameters{
-      .batch_size = 1,
-      .num_heads = 1,
-      .seq_len = 100, // larger than tile size
-      .head_embd = 32,
-  });
+  if (argc == 1) { // test only
+    // small aliged
+    test_alg(AttentionParameters{
+        .batch_size = 1,
+        .num_heads = 1,
+        .seq_len = 50,
+        .head_embd = 32,
+    });
 
-  // unaligned head embedding dim
-  test_alg(AttentionParameters{
-      .batch_size = 1,
-      .num_heads = 1,
-      .seq_len = 64,
-      .head_embd = 50,
-  });
+    // unaligned seq len
+    test_alg(AttentionParameters{
+        .batch_size = 1,
+        .num_heads = 1,
+        .seq_len = 100, // larger than tile size
+        .head_embd = 32,
+    });
 
-  // Bigger test with everything unaligned
-  test_alg(AttentionParameters{
-      .batch_size = 5,
-      .num_heads = 12,
-      .seq_len = 53,
-      .head_embd = 69,
-  });
+    // unaligned head embedding dim
+    test_alg(AttentionParameters{
+        .batch_size = 1,
+        .num_heads = 1,
+        .seq_len = 64,
+        .head_embd = 50,
+    });
+
+    // Bigger test with everything unaligned
+    test_alg(AttentionParameters{
+        .batch_size = 5,
+        .num_heads = 12,
+        .seq_len = 53,
+        .head_embd = 69,
+    });
+  }
+  else { // profile
+    AttentionParameters params{
+        .batch_size = 5,
+        .num_heads = 12,
+        .seq_len = 53,
+        .head_embd = 69,
+    };
+    auto [q, k, v] = generate_data(AttentionParameters{
+            // gpt3
+            .batch_size = 4,
+            .num_heads = 96,
+            .seq_len = 2048,
+            .head_embd = 128,
+            // gpt2
+            // .batch_size = 8,
+            // .num_heads = 12,
+            // .seq_len = 1024,
+            // .head_embd = 64,
+        });
+
+    // time_kernel(q, k, v, flash::KernelType::naive1D);
+    // time_kernel(q, k, v, flash::KernelType::scalar2D);
+    time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
+    // time_kernel(q, k, v, flash::KernelType::warp_wmma_sync);
+    time_kernel(q, k, v, flash::KernelType::block_wmma_sync);
+    time_kernel(q, k, v, flash::KernelType::wmma_sync_row_block);
+    // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
+  }
+
 
   // current development
   // {

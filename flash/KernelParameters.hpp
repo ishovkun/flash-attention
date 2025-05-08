@@ -1,13 +1,13 @@
 #pragma once
-#include "common.hpp"
-#include "cuda_constants.hpp"
 #include "launch.hpp"
 #include <cmath>
 #include <stdexcept>
+#include "common.hpp"
+#include "wmma.hpp"
 
 namespace flash {
 
-constexpr int maxWarpsPerBlock = constants::maxBlockSize / constants::warpSize;
+constexpr int maxWarpsPerBlock = common::maxBlockSize / common::warpSize;
 
 static inline int maxTileSizeForDeviceSharedMemory(int head_dim) {
   /*
@@ -51,7 +51,7 @@ public:
 
   dim3 tileSize() {
     auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim),
-                       constants::maxBlockSize);
+                       common::maxBlockSize);
     return dim3(ts, ts);
   }
   uint sramSize() {
@@ -74,7 +74,8 @@ public:
         headDim(headDim) {}
 
   dim3 tileSize() {
-    auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    auto ts =
+        std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
 
@@ -85,7 +86,7 @@ public:
 
   dim3 blockDim() {
     auto ts = tileSize();
-    return dim3(constants::warpSize, std::max(ts.x, ts.y));
+    return dim3(common::warpSize, std::max(ts.x, ts.y));
   }
 
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
@@ -98,9 +99,10 @@ class Scalar2DRowTileKernelParameters : public KernelParameters {
   uint headDim;
 
 public:
-  Scalar2DRowTileKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
-  : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
-    headDim(headDim) {}
+  Scalar2DRowTileKernelParameters(int batchSize, int numHeads, int seqLen,
+                                  int headDim)
+      : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+        headDim(headDim) {}
 
   dim3 tileSize() {
     auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
@@ -115,7 +117,7 @@ public:
   dim3 blockDim() {
     auto ts = tileSize();
     auto warpsPerTile = ts.y;
-    return dim3(constants::warpSize, warpsPerTile);
+    return dim3(common::warpSize, warpsPerTile);
   }
 
   dim3 gridDim() {
@@ -135,15 +137,15 @@ class WarpWMMASyncKernelParameters : public KernelParameters {
 public:
   WarpWMMASyncKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
-        headDim(common::nextMultiple(headDim, constants::WMMA_N)) {}
+        headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
 
-  dim3 tileSize() { return dim3(constants::WMMA_M, constants::WMMA_M); }
+  dim3 tileSize() { return dim3(wmma::WMMA_M, wmma::WMMA_M); }
 
   uint sramSize() {
     auto ts = tileSize();
     return sramSizeForTiles(headDim, ts.x, ts.y);
   }
-  dim3 blockDim() { return {constants::warpSize}; }
+  dim3 blockDim() { return {common::warpSize}; }
 
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
 };
@@ -155,13 +157,14 @@ class BlockWMMASyncKernelParameters : public KernelParameters {
   uint headDim;
 
 public:
-  BlockWMMASyncKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
-  : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
-    headDim(common::nextMultiple(headDim, constants::WMMA_N))
-  {}
+  BlockWMMASyncKernelParameters(int batchSize, int numHeads, int seqLen,
+                                int headDim)
+      : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+        headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
 
   dim3 tileSize() {
-    auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    auto ts =
+        std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
 
@@ -172,10 +175,45 @@ public:
 
   dim3 blockDim() {
     auto ts = tileSize();
-    return dim3(constants::warpSize, max(ts.x, ts.y));
+    return dim3(common::warpSize, max(ts.x, ts.y));
   }
 
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
+};
+
+class WMMASyncRowBlockKernelParameters : public KernelParameters {
+  uint batchSize;
+  uint numHeads;
+  uint seqLen;
+  uint headDim;
+
+public:
+  WMMASyncRowBlockKernelParameters(int batchSize, int numHeads, int seqLen,
+                                   int headDim)
+      : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+        headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
+
+  dim3 tileSize() {
+    auto ts =
+        std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    return dim3(ts, ts);
+  }
+
+  uint sramSize() {
+    auto ts = tileSize();
+    return sramSizeForTiles(headDim, ts.x, ts.y);
+  }
+
+  dim3 blockDim() {
+    auto warpsPerTile = min(12, tileSize().y);
+    // auto warpsPerTile = 1;
+    return dim3(common::warpSize, warpsPerTile);
+  }
+
+  dim3 gridDim() {
+    uint blocksPerHead = common::ceil_div(seqLen, tileSize().y);
+    return {batchSize, numHeads, blocksPerHead};
+  }
 };
 
 class BlockWMMAAsyncKernelParameters : public KernelParameters {
@@ -185,10 +223,10 @@ class BlockWMMAAsyncKernelParameters : public KernelParameters {
   uint headDim;
 
 public:
-  BlockWMMAAsyncKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
-  : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
-    headDim(common::nextMultiple(headDim, constants::WMMA_N))
-  {}
+  BlockWMMAAsyncKernelParameters(int batchSize, int numHeads, int seqLen,
+                                 int headDim)
+      : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+        headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
 
   dim3 tileSize() {
     // x = Bc = Br
@@ -202,8 +240,8 @@ public:
     auto ts = floor(0.5 * (sqrt(9. * d * d + 6. * d + 4. * M + 1.) - 3. * d - 1.));
 
     // must be a multiple of WMMA_M
-    auto ts_y = (int)(ts / constants::WMMA_M) * constants::WMMA_M;
-    auto ts_x = (int)(ts / constants::WMMA_N) * constants::WMMA_N;
+    auto ts_y = (int)(ts / wmma::WMMA_M) * wmma::WMMA_M;
+    auto ts_x = (int)(ts / wmma::WMMA_N) * wmma::WMMA_N;
 
     return dim3(ts_x, ts_y);
   }
@@ -220,7 +258,7 @@ public:
     // auto nWarps = max(ts.x, ts.y);
     auto nWarps = 6;
     nWarps = min(nWarps, maxWarpsPerBlock);
-    return dim3(constants::warpSize, nWarps);
+    return dim3(common::warpSize, nWarps);
   }
 
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
@@ -246,6 +284,9 @@ public:
                                                             seqLen, headDim);
     case KernelType::block_wmma_sync:
       return std::make_unique<BlockWMMASyncKernelParameters>(
+          batchSize, numHeads, seqLen, headDim);
+    case KernelType::wmma_sync_row_block:
+      return std::make_unique<WMMASyncRowBlockKernelParameters>(
           batchSize, numHeads, seqLen, headDim);
     case KernelType::block_wmma_async:
       return std::make_unique<BlockWMMAAsyncKernelParameters>(

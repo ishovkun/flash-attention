@@ -16,14 +16,19 @@ torch.ops.load_library(pyflashPath)
 import torch.autograd.profiler as profiler
 from torch.ops import pyflash
 
-# Load the CUDA kernel as a python module
-
-# # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 8
-num_heads = 12
-seq_len = 1024
-head_embd = 64
 profiler_print_cuda_time_only = True
+
+# GPT2
+# batch_size = 8
+# num_heads = 12
+# seq_len = 1024
+# head_embd = 64
+
+#GPT3
+batch_size = 4
+num_heads = 96
+seq_len = 2048
+head_embd = 128
 
 torch.manual_seed(0)
 q = torch.randn(batch_size, num_heads, seq_len, head_embd).cuda()
@@ -61,4 +66,5 @@ profile_kernel(pyflash.scalar2d, q, k, v, gpu_time_only=profiler_print_cuda_time
 profile_kernel(pyflash.scalar2d_row_tile, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.warp_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.block_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.block_wmma_sync_row_block, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.block_wmma_async, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
