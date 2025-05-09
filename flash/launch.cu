@@ -1,7 +1,7 @@
 #include "KernelParameters.hpp"
 #include "common.hpp"
-#include "wmma.hpp"
 #include "launch.hpp"
+#include "wmma.hpp"
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -42,11 +42,18 @@ __global__ void block_wmma_sync(float const *__restrict__ Q,
                                 float *__restrict__ O);
 
 __global__ void wmma_sync_rowblock(float const *__restrict__ Q,
-                                 float const *__restrict__ K,
-                                 float const *__restrict__ V, int N, int d,
-                                 int Bc, int Br, float softmax_scale,
-                                 float *__restrict__ l, float *__restrict__ m,
-                                 float *__restrict__ O);
+                                   float const *__restrict__ K,
+                                   float const *__restrict__ V, int N, int d,
+                                   int Bc, int Br, float softmax_scale,
+                                   float *__restrict__ l, float *__restrict__ m,
+                                   float *__restrict__ O);
+
+__global__ void
+forward_kernel_mma_sync(float const *__restrict__ Q,
+                        float const *__restrict__ K,
+                        float const *__restrict__ V, int N, int d, int Bc,
+                        int Br, float softmax_scale, float *__restrict__ l,
+                        float *__restrict__ m, float *__restrict__ O);
 
 __global__ void block_wmma_async(float const *__restrict__ Q,
                                  float const *__restrict__ K,
@@ -161,12 +168,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   const int d = Q.size(3);  // head dimension
 
   // auto const d_pad = selectPadding(d, kernelType);
-  auto kernelParams =
-      FlashKernelParametersFactory::create(B, nh, N, d, kernelType);
+  auto kernelParams = FlashKernelParametersFactory::create(B, nh, N, d, kernelType);
 
   // auto const tileSize = selectTileSize(d_pad, kernelType);
   auto const tileSize = kernelParams->tileSize();
-  // std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << std::endl;
 
   auto const Br = tileSize.y;
   auto const Bc = tileSize.x;
@@ -231,6 +236,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   case KernelType::block_wmma_async:
     block_wmma_async<<<gridDim, blockDim, sramSize>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
+        Br, softmax_scale, l, m, O.data_ptr<float>());
+    break;
+  case KernelType::mma_sync:
+    forward_kernel_mma_sync<<<gridDim, blockDim, sramSize>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), N, d, Bc,
         Br, softmax_scale, l, m, O.data_ptr<float>());
     break;

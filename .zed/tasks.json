@@ -47,7 +47,7 @@
         "tags": []
     },
     {
-        "label": "[Profile] Flash Attention",
+        "label": "[Benchmark] Flash Attention",
         "command": "make -j8 && ./runner profile",
         "cwd": "$ZED_WORKTREE_ROOT/build",
         "use_new_terminal": false,

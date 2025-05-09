@@ -1,9 +1,10 @@
 #pragma once
+#include "common.hpp"
 #include "launch.hpp"
+#include "wmma.hpp"
+#include "mma.hpp"
 #include <cmath>
 #include <stdexcept>
-#include "common.hpp"
-#include "wmma.hpp"
 
 namespace flash {
 
@@ -216,6 +217,39 @@ public:
   }
 };
 
+class MMASyncKernelParameters : public KernelParameters {
+  uint batchSize;
+  uint numHeads;
+  uint seqLen;
+  uint headDim;
+
+public:
+  MMASyncKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
+      : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+        headDim(common::nextMultiple(headDim, mma::Tile::N)) {}
+
+  dim3 tileSize() {
+    auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    return dim3(ts, ts);
+  }
+
+  uint sramSize() {
+    auto ts = tileSize();
+    return sramSizeForTiles(headDim, ts.x, ts.y);
+  }
+
+  dim3 blockDim() {
+    auto warpsPerTile = min(12, tileSize().y);
+    // auto warpsPerTile = 1;
+    return dim3(common::warpSize, warpsPerTile);
+  }
+
+  dim3 gridDim() {
+    uint blocksPerHead = common::ceil_div(seqLen, tileSize().y);
+    return {batchSize, numHeads, blocksPerHead};
+  }
+};
+
 class BlockWMMAAsyncKernelParameters : public KernelParameters {
   uint batchSize;
   uint numHeads;
@@ -288,6 +322,9 @@ public:
     case KernelType::wmma_sync_row_block:
       return std::make_unique<WMMASyncRowBlockKernelParameters>(
           batchSize, numHeads, seqLen, headDim);
+    case KernelType::mma_sync:
+      return std::make_unique<MMASyncKernelParameters>(batchSize, numHeads,
+                                                       seqLen, headDim);
     case KernelType::block_wmma_async:
       return std::make_unique<BlockWMMAAsyncKernelParameters>(
           batchSize, numHeads, seqLen, headDim);

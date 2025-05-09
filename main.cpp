@@ -84,15 +84,17 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("Scalar 2D row tile", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::scalar2D_row_tile);
   });
-  ret &=
-      run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
+  ret &= run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
         return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
       });
   ret &= run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
   });
-  ret &= run_and_compare("Block wmma sync 1", manual_result, atol, rtol, [&] {
+  ret &= run_and_compare("wmma sync row-block", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::wmma_sync_row_block);
+  });
+  ret &= run_and_compare("mma sync", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::mma_sync);
   });
   ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
@@ -171,10 +173,11 @@ auto main(int argc, char *argv[]) -> int {
 
     // time_kernel(q, k, v, flash::KernelType::naive1D);
     // time_kernel(q, k, v, flash::KernelType::scalar2D);
-    time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
+    // time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
     // time_kernel(q, k, v, flash::KernelType::warp_wmma_sync);
     time_kernel(q, k, v, flash::KernelType::block_wmma_sync);
     time_kernel(q, k, v, flash::KernelType::wmma_sync_row_block);
+    time_kernel(q, k, v, flash::KernelType::mma_sync);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
   }
 

@@ -78,6 +78,7 @@ __global__ void forward_kernel_2d_row_tile(
         }
         Sij *= softmax_scale;
         S[Bc * ii + jj] = Sij;
+
         row_m = common::float_max(row_m, Sij);
       }
       row_m = common::warpReduce<common::float_max>(row_m);

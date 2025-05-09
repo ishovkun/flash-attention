@@ -149,10 +149,8 @@ wmma_sync_rowblock(float const *__restrict__ Q, // query vector
       auto ii = subtileI * wmma::WMMA_M;
       auto k = subtileK * wmma::WMMA_N;
       for (int jj = 0; jj < Bc; jj += wmma::WMMA_K) {
-        wmma::load_matrix_sync(p_frag, &_S[ii * Bc + jj],
-                               Bc); // P: Br x Bc
-        wmma::load_matrix_sync(v_frag, &_V[jj * dp + k],
-                               dp); // V: Bc x d
+        wmma::load_matrix_sync(p_frag, &_S[ii * Bc + jj], Bc); // P: Br x Bc
+        wmma::load_matrix_sync(v_frag, &_V[jj * dp + k], dp); // V: Bc x d
         for (int t = 0; t < p_frag.num_elements; t++)
           p_frag.x[t] = wmma::__float_to_tf32(p_frag.x[t]);
         for (int t = 0; t < v_frag.num_elements; t++)
