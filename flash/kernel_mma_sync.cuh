@@ -1,3 +1,4 @@
+#pragma once
 #include "common.hpp"
 #include "mma.hpp"
 #include <cmath>
@@ -8,31 +9,33 @@
 
 namespace flash {
 
-__global__ void forward_kernel_mma_sync(
-    float const *__restrict__ Q, // query vector
-    float const *__restrict__ K, // key vector
-    float const *__restrict__ V, // value vector
-    int N,                       // sequence length
-    int d,                       // head_dim
-    int Bc, int Br,              // column tile size and row tile size
-    float softmax_scale,         // 1/sqrt(d)
-    float *__restrict__ l,       // storage temp for row \sum exp(S)
-    float *__restrict__ m,       // storage temp for row \max S
-    float *__restrict__ O)       // output attention
+template <uint32_t Br, uint32_t Bc, uint32_t numWarps>
+__global__ void
+kernel_mma_sync(float const *__restrict__ Q, // query vector
+                float const *__restrict__ K, // key vector
+                float const *__restrict__ V, // value vector
+                int seq_length,              // sequence length
+                int d,                       // head_dim
+                float softmax_scale,         // 1/sqrt(d)
+                float *__restrict__ l,       // storage temp for row \sum exp(S)
+                float *__restrict__ m,       // storage temp for row \max S
+                float *__restrict__ O)       // output attention
 {
   int batch = blockIdx.x;
   int head = blockIdx.y;
   int numHeads = gridDim.y;
 
-  int qkv_offset = (batch * numHeads + head) * N * d;
-  int lm_offset = (batch * numHeads + head) * N;
+  int qkv_offset = (batch * numHeads + head) * seq_length * d;
+  int lm_offset = (batch * numHeads + head) * seq_length;
 
   // padded dimension d for wmma alignment
   auto dp = common::nextMultiple(d, mma::Tile::N);
 
-  // analysis give Br = 48
-  // local mcur size should be Br / warpsPerBlock
-  float mcur[48];
+  // bug is here
+  constexpr auto rowsPerWarp = common::ceil_div(Br, numWarps);
+  float mcur[rowsPerWarp];
+
+  // bug: Br != Bc, but we save PV into K (Bc x d)
 
   // shared memory for tiles
   extern __shared__ float sram[];
@@ -44,11 +47,13 @@ __global__ void forward_kernel_mma_sync(
   auto const tx = threadIdx.x;
   auto const ty = threadIdx.y;
   auto const warp = ty;
-  auto const numWarps = blockDim.y;
 
   auto const iStart = blockIdx.z * Br;
-  auto const iEnd = min(iStart + Br, N);
-  auto const Brc = min(Br, N - iStart);
+  auto const iEnd = min(iStart + Br, seq_length);
+  auto const Brc = min(Br, seq_length - iStart);
+
+  auto const iiStart = warp*rowsPerWarp;
+  auto const iiEnd = min((warp+1)*rowsPerWarp, Brc);
 
   // set l and m to default values
   for (int i = iStart + warp * warpSize + tx; i < iEnd; i += warpSize * numWarps) {
@@ -59,7 +64,6 @@ __global__ void forward_kernel_mma_sync(
   // Split Sij into numWarpsI x numWarpsJ
   // auto rowsPerWarp = Br / numWarps;
 
-
   // Load Q tile
   for (int ii = warp; ii < Brc; ii += numWarps) {
     auto i = iStart + ii;
@@ -69,9 +73,9 @@ __global__ void forward_kernel_mma_sync(
     }
   }
 
-  for (int jStart = 0; jStart < N; jStart += Bc) { // loop j tiles
+  for (int jStart = 0; jStart < seq_length; jStart += Bc) { // loop j tiles
     // Potentially cropped Bc in the last tile
-    auto Bcc = min(Bc, N - jStart);
+    auto Bcc = min(Bc, seq_length - jStart);
 
     // load Kj, Vj
     for (int jj = warp; jj < Bc; jj += numWarps) {
@@ -112,13 +116,13 @@ __global__ void forward_kernel_mma_sync(
     __syncthreads();
 
     // P = exp(S)
-    for (int ii = warp; ii < Br; ii += numWarps) {
+    for (auto ii = iiStart; ii < iiEnd; ii++) {
       float row_m = -INFINITY;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
         row_m = common::float_max(row_m, _S[Bc * ii + jj]);
       }
       row_m = common::warpReduce<common::float_max>(row_m);
-      mcur[ii] = row_m;
+      mcur[ii-iiStart] = row_m;
       for (int jj = tx; jj < Bc; jj += blockDim.x) {
         float Pij = __expf(_S[Bc * ii + jj] - row_m);
         _S[Bc * ii + jj] = (ii < Brc && jj < Bcc) ? Pij : 0.f;
@@ -127,15 +131,6 @@ __global__ void forward_kernel_mma_sync(
     __syncthreads();
 
     float *_PV = _K; // reuse _K to store PV
-    // for (int ii = warp; ii < Brc; ii += numWarps) {
-    //   for (int k = tx; k < d; k += blockDim.x) {
-    //     float PinVnk = 0.f;
-    //     for (int jj = 0; jj < Bc; jj++) {
-    //       PinVnk += _S[Bc * ii + jj] * _V[jj * dp + k];
-    //     }
-    //     _PV[ii*dp + k] = PinVnk;
-    //   }
-    // }
 
     mma::FragmentA p_frag;
     mma::FragmentB<mma::Layout::row_major> v_frag;
@@ -158,29 +153,11 @@ __global__ void forward_kernel_mma_sync(
     }
     __syncthreads();
 
-    // if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && tx == 0 &&
-    //     ty == 0 && jStart == 0) {
-    //   {
-    //     auto ii = 0;
-    //     for (int k = 0; k < mma::Tile::K; k++) {
-    //       float PinVnk = 0.f;
-    //       for (int jj = 0; jj < Bc; jj++) {
-    //         PinVnk += _S[ii * Bc + jj] * _V[jj * dp + k];
-    //       }
-    //       auto diff = _PV[ii*dp + k] - PinVnk;
-    //       printf("PV[%d %d] = %f %f diff %f\n", ii, k, _PV[ii*dp + k], PinVnk, diff);
-
-    //       {
-    //         // Frag B
-    //       }
-    //     }
-    //   }
-    // }
 
     // Write O,l, and m to global memory
-    for (int ii = warp; ii < Brc; ii += numWarps) {
+    for (auto ii = iiStart; ii < iiEnd; ii++) {
       auto i = iStart + ii;
-      auto row_m = mcur[ii];
+      auto row_m = mcur[ii-iiStart];
 
       // compute row_l
       float row_l = 0.f;

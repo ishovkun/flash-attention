@@ -3,7 +3,7 @@
 [
     {
         "label": "[cmake] Flash Attention",
-        "command": "mkdir -p build && cd build && cmake ..",
+        "command": "mkdir -p build && cd build && cmake -G Ninja ..",
         "args": [
             "-DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
@@ -23,7 +23,7 @@
     },
     {
         "label": "[compile] Flash Attention",
-        "command": "make -j8",
+        "command": "ninja -j8",
         "env": { "foo": "bar" },
         "cwd": "$ZED_WORKTREE_ROOT/build",
         "use_new_terminal": false,
@@ -36,11 +36,12 @@
     },
     {
         "label": "[Test] Flash Attention",
-        "command": "make -j8 && ./runner",
+        "command": "ninja -j8 && ./runner",
         "cwd": "$ZED_WORKTREE_ROOT/build",
         "use_new_terminal": false,
         "allow_concurrent_runs": false,
         "reveal": "no_focus",
+        // "reveal_target": "center",
         "reveal_target": "dock",
         "hide": "never",
         "shell": "system",
@@ -48,7 +49,7 @@
     },
     {
         "label": "[Benchmark] Flash Attention",
-        "command": "make -j8 && ./runner profile",
+        "command": "ninja -j8 && ./runner profile",
         "cwd": "$ZED_WORKTREE_ROOT/build",
         "use_new_terminal": false,
         "allow_concurrent_runs": false,

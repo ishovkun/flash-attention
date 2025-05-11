@@ -23,12 +23,16 @@ __device__ float warpReduce(float value) {
   return __shfl_sync(UINT32_MAX, value, 0);
 }
 
-inline int __host__ __device__ ceil_div(int a, int b) {
+inline constexpr int __host__ __device__ ceil_div(int a, int b) {
   return (a + b - 1) / b;
 }
 
 inline int __host__ __device__ nextMultiple(int a, int b) {
   return ceil_div(a, b) * b;
+}
+
+inline int __host__ __device__ prevMultiple(int a, int b) {
+  return a - a % b;
 }
 
 } // end namespace flash::common

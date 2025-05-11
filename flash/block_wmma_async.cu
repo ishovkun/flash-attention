@@ -38,7 +38,7 @@ block_wmma_async(float const *__restrict__ Q, // query vector
   float *_K = &sram[Br * dp];                   // size = Bc x d
   float *_V = &sram[dp * (Bc + Br)];            // size = Bc x d
   float *_S = &sram[dp * (Br + 2 * Bc)];        // size = Br x Bc
-  float *_m = &sram[dp * (Br + 2 * Bc) + Br*Bc]; // size = max(Br, Bc)
+  float *_m = &sram[dp * (Br + 2 * Bc) + Br*Bc]; // size = Br
 
   auto tx = threadIdx.x;
   auto ty = threadIdx.y;

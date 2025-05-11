@@ -7,8 +7,7 @@
 namespace flash {
 
 __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
-                               const int N, const int d, const int Tc,
-                               const int Tr, const int Bc, const int Br,
+                               const int N, const int d, const int Bc, const int Br,
                                const float softmax_scale, float *l, float *m,
                                float *O) {
   int tx = threadIdx.x;
@@ -16,9 +15,11 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
   int head = blockIdx.y; // batch and head index
 
   // Offset into Q,K,V,O,l,m - different for each batch and head
-  int qkv_offset =
-      (batch * gridDim.y * N * d) + (head * N * d);     // gridDim.y = nh
+  int qkv_offset = (batch * gridDim.y * N * d) + (head * N * d);     // gridDim.y = nh
   int lm_offset = (batch * gridDim.y * N) + (head * N); // offset for l and m
+
+  auto const Tc = common::ceil_div(N, Bc);
+  auto const Tr = common::ceil_div(N, Br);
 
   // padded dimension d for wmma alignment
   auto dp = common::nextMultiple(d, wmma::WMMA_N);

@@ -1,3 +1,4 @@
+#pragma once
 #include <stdint.h>
 #include <stdio.h>
 #include <type_traits>
@@ -5,9 +6,9 @@
 namespace flash::mma {
 
 struct Tile {
-  static constexpr uint M = 16;
-  static constexpr uint N = 8;
-  static constexpr uint K = 8;
+  static constexpr uint32_t M = 16;
+  static constexpr uint32_t N = 8;
+  static constexpr uint32_t K = 8;
 };
 
 struct FragmentA {

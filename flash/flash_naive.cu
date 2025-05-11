@@ -3,17 +3,21 @@
 #include <torch/types.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "common.hpp"
 
 namespace flash {
 
 __global__
 void naive_forward_kernel(const float* Q, const float* K, const float* V, const int N, const int d,
-                          const int Tc, const int Tr, const int Bc, const int Br, const float softmax_scale,
+                          const int Bc, const int Br, const float softmax_scale,
                           float* l, float *m, float* O) {
     int tx = threadIdx.x;
     int batch = blockIdx.x;
     int head = blockIdx.y;
     auto numHeads = gridDim.y;
+
+    auto const Tc = common::ceil_div(N, Bc);
+    auto const Tr = common::ceil_div(N, Br);
 
     // Offset into Q,K,V,O,l,m - different for each batch and head
     int qkv_offset = (batch * numHeads * N * d) + (head * N * d);
