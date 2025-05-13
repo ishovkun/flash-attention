@@ -13,6 +13,7 @@ enum class KernelType {
   wmma_sync_row_block,
   block_wmma_async,
   mma_sync,
+  mma_sync_swizzle,
 };
 
 
@@ -33,6 +34,7 @@ inline std::string to_string(flash::KernelType type)
     case wmma_sync_row_block: return "wmma_sync_row_block";
     case block_wmma_async: return "block_wmma_async";
     case mma_sync: return "mma_sync";
+    case mma_sync_swizzle: return "mma_sync_swizzle";
     default: throw std::invalid_argument("wrong kernel type");
   }
 }

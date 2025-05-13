@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "common.hpp"
 #include <stdio.h>
 #include <type_traits>
 
@@ -31,32 +32,44 @@ struct FragmentAccumulator {
   float reg[size];
 };
 
-__device__ inline void load_matrix_sync(FragmentA &frag, float const *ptr,
+template <typename F>
+concept U32ColumnIndexFunc =
+    requires(F f, uint32_t row, uint32_t col, uint32_t stride) {
+      { f(row, col, stride) } -> std::same_as<uint32_t>;
+    };
+
+inline __device__ uint32_t returnColumn(uint32_t row, uint32_t col,
                                         uint32_t stride) {
-  /*
-  A fragment:
-  groupID           = %laneid >> 2
-  threadID_in_group = %laneid % 4
-  row =      groupID            for a0 and a2
-             groupID + 8        for a1 and a3
-  col =  threadID_in_group       for a0 and a1
-         threadID_in_group + 4   for a2 and a3
-  */
+  return col;
+}
+
+template <U32ColumnIndexFunc auto returnColumnFunc = returnColumn>
+inline __device__ auto load_matrix_sync(FragmentA &frag, float const *ptr,
+                                        uint32_t tileFirstRow, uint32_t tileFirstCol,
+                                        uint32_t stride) {
   auto lane = threadIdx.x;
   auto group = lane >> 2;
   auto member = lane % 4;
 #pragma unroll
-  for (int i = 0; i < 4; i++) {
-    uint32_t row = (i == 0 || i == 2) ? group : group + 8;
-    uint32_t col = (i == 0 || i == 1) ? member : member + 4;
+  for (uint32_t i = 0; i < 4; i++) {
+    uint32_t tileRow = (i == 0 || i == 2) ? group : group + 8;
+    uint32_t tileCol = (i == 0 || i == 1) ? member : member + 4;
+    uint32_t row = tileFirstRow + tileRow;
+    uint32_t col = tileFirstCol + tileCol;
+    // potentially swizzle if a swizzle function is passed
+    col = returnColumnFunc(row, col, stride);
+    // convert f32 -> tf32 & load into registers
     asm("cvt.rna.tf32.f32  %0, %1;\n"
         : "=r"(frag.reg[i])
         : "f"(ptr[row * stride + col]));
   }
 }
 
-template <Layout layout>
-__device__ inline void load_matrix_sync(FragmentB<layout> &frag, float *ptr,
+template<U32ColumnIndexFunc auto returnColumnFunc = returnColumn, Layout layout>
+__device__ inline void load_matrix_sync(FragmentB<layout> &frag,
+                                        float const *ptr,
+                                        uint32_t tileFirstRow,
+                                        uint32_t tileFirstCol,
                                         uint32_t stride) {
   /*
   groupID           = %laneid >> 2
@@ -70,17 +83,17 @@ __device__ inline void load_matrix_sync(FragmentB<layout> &frag, float *ptr,
   auto member = lane % 4;
 #pragma unroll
   for (int i = 0; i < 2; i++) {
-    uint32_t row = (i == 0) ? member : member + 4;
-    uint32_t col = group;
-    if constexpr (layout == Layout::row_major) {
-      asm("cvt.rna.tf32.f32  %0, %1;\n"
-          : "=r"(frag.reg[i])
-          : "f"(ptr[row * stride + col]));
-    } else {
-      asm("cvt.rna.tf32.f32  %0, %1;\n"
-          : "=r"(frag.reg[i])
-          : "f"(ptr[col * stride + row]));
+    uint32_t tileRow = (i == 0) ? member : member + 4;
+    uint32_t tileCol = group;
+    if constexpr (layout == Layout::col_major) {
+      common::swap(tileRow, tileCol);
     }
+    uint32_t row = tileFirstRow + tileRow;
+    uint32_t col = tileFirstCol + tileCol;
+    col = returnColumnFunc(row, col, stride);
+    asm("cvt.rna.tf32.f32  %0, %1;\n"
+        : "=r"(frag.reg[i])
+        : "f"(ptr[row * stride + col]));
   }
 }
 
@@ -96,36 +109,33 @@ __device__ inline void mma_sync(FragmentAccumulator &D, FragmentA const &A,
                  "f"(C.reg[2]), "f"(C.reg[3]));
 }
 
-// template <typename T>
-// concept FragmentType = requires {
-//   requires std::is_same_v<decltype(T::size), const uint8_t>;
-//   requires T::size > 0;
-//   requires std::is_same_v<decltype(T{}.reg), uint32_t[T::size]>;
-// };
-
-// template <FragmentType frag_t>
 __device__ inline void fill_fragment(FragmentAccumulator &frag, float value) {
   for (auto i = 0; i < frag.size; i++)
     frag.reg[i] = value;
 }
 
-__device__ inline void store_matrix_sync(float *ptr, FragmentAccumulator &frag,
-                                         uint32_t stride) {
+template<U32ColumnIndexFunc auto returnColumnFunc = returnColumn>
+__device__ inline void store_matrix_sync(float *ptr, uint32_t tileFirstRow,
+                                          uint32_t tileFirstCol, uint32_t stride,
+                                          FragmentAccumulator &frag) {
   /*
-  groupID           = %laneid >> 2
-  threadID_in_group = %laneid % 4
-  row =      groupID                            for c0 and c1
-          groupID + 8                          for c2 and c3
-  col =  (threadID_in_group * 2) + (i & 0x1)    for ci   where i = {0,..,3}
+   groupID           = %laneid >> 2
+   threadID_in_group = %laneid % 4
+   row =      groupID                            for c0 and c1
+   groupID + 8                          for c2 and c3
+   col =  (threadID_in_group * 2) + (i & 0x1)    for ci   where i = {0,..,3}
   */
   auto lane = threadIdx.x;
   auto group = lane >> 2;
   auto member = lane % 4;
 
-#pragma unroll
+  #pragma unroll
   for (int i = 0; i < 4; i++) {
-    uint32_t row = (i < 2) ? group : group + 8;
-    uint32_t col = 2 * member + (i & 0x1);
+    uint32_t tileRow = (i < 2) ? group : group + 8;
+    uint32_t tileCol = 2 * member + (i & 0x1);
+    uint32_t row = tileFirstRow + tileRow;
+    uint32_t col = tileFirstCol + tileCol;
+    col = returnColumnFunc(row, col, stride);
     ptr[stride * row + col] = frag.reg[i];
   }
 }

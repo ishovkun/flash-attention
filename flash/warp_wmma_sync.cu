@@ -48,10 +48,8 @@ __global__ void warp_wmma_sync(const float *Q, const float *K, const float *V,
     for (int jj = 0; jj < Bc; jj++) {
       for (auto k = tx; k < dp; k += warpSize) {
         auto inBounds = jj < Bcc && k < d;
-        Kj[jj * dp + k] =
-            inBounds ? K[qkv_offset + j * tile_size + jj * d + k] : 0.f;
-        Vj[jj * dp + k] =
-            inBounds ? V[qkv_offset + j * tile_size + jj * d + k] : 0.f;
+        Kj[jj * dp + k] = inBounds ? K[qkv_offset + j * tile_size + jj * d + k] : 0.f;
+        Vj[jj * dp + k] = inBounds ? V[qkv_offset + j * tile_size + jj * d + k] : 0.f;
       }
     }
     __syncthreads();

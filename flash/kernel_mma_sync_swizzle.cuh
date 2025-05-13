@@ -10,16 +10,16 @@
 namespace flash {
 
 template <uint32_t Br, uint32_t Bc, uint32_t numWarps>
-__global__ void
-kernel_mma_sync(float const *__restrict__ Q, // query vector
-                float const *__restrict__ K, // key vector
-                float const *__restrict__ V, // value vector
-                int seq_length,              // sequence length
-                int d,                       // head_dim
-                float softmax_scale,         // 1/sqrt(d)
-                float *__restrict__ l,       // storage temp for row \sum exp(S)
-                float *__restrict__ m,       // storage temp for row \max S
-                float *__restrict__ O)       // output attention
+__global__ void kernel_mma_sync_swizzle(
+    float const *__restrict__ Q, // query vector
+    float const *__restrict__ K, // key vector
+    float const *__restrict__ V, // value vector
+    int seq_length,              // sequence length
+    int d,                       // head_dim
+    float softmax_scale,         // 1/sqrt(d)
+    float *__restrict__ l,       // storage temp for row \sum exp(S)
+    float *__restrict__ m,       // storage temp for row \max S
+    float *__restrict__ O)       // output attention
 {
   int batch = blockIdx.x;
   int head = blockIdx.y;
@@ -52,8 +52,8 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
   auto const iEnd = min(iStart + Br, seq_length);
   auto const Brc = min(Br, seq_length - iStart);
 
-  auto const iiStart = warp*rowsPerWarp;
-  auto const iiEnd = min((warp+1)*rowsPerWarp, Brc);
+  auto const iiStart = warp * rowsPerWarp;
+  auto const iiEnd = min((warp + 1) * rowsPerWarp, Brc);
 
   // set l and m to default values
   for (int i = iStart + warp * warpSize + tx; i < iEnd; i += warpSize * numWarps) {
@@ -61,15 +61,16 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     m[lm_offset + i] = -INFINITY;
   }
 
-  // Split Sij into numWarpsI x numWarpsJ
-  // auto rowsPerWarp = Br / numWarps;
-
   // Load Q tile
   for (int ii = warp; ii < Brc; ii += numWarps) {
     auto i = iStart + ii;
     for (int k = tx; k < dp; k += blockDim.x) {
       auto inBounds = k < d;
-      _Q[ii * dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
+
+      // auto k_sw = common::getSwizzledColumn(ii % mma::Tile::M, k, dp);
+      auto k_sw = common::getSkewCol<mma::Tile::M>(ii, k, dp);
+      _Q[ii*dp + k_sw] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
+      // _Q[ii*dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
     }
   }
 
@@ -80,10 +81,11 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     // load Kj, Vj
     for (int jj = warp; jj < Bc; jj += numWarps) {
       auto j = jStart + jj;
-      for (int k = tx; k < dp; k += blockDim.x) {
+      for (int k = tx; k < dp; k += warpSize) {
         auto inBounds = jj < Bcc && k < d;
-        _K[jj * dp + k] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
-        _V[jj * dp + k] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
+        auto k_sw = common::getSkewCol<mma::Tile::N>(jj, k, dp); // swizzle column
+        _K[jj*dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
+        _V[jj*dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
       }
     }
 
@@ -94,25 +96,25 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     mma::FragmentB<mma::Layout::col_major> k_frag;
     mma::FragmentAccumulator s_frag;
 
-    auto numSubtilesI = common::ceil_div(Br, mma::Tile::M);
-    auto numSubtilesJ = common::ceil_div(Bc, mma::Tile::N);
+    constexpr auto numSubtilesI = common::ceil_div(Br, mma::Tile::M);
+    constexpr auto numSubtilesJ = common::ceil_div(Bc, mma::Tile::N);
     auto numSubtilesQK = numSubtilesI * numSubtilesJ;
-    for (int subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
+    for (uint32_t subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
       mma::fill_fragment(s_frag, 0.f);
       auto subtileI = subTile / numSubtilesJ;
       auto subtileJ = subTile % numSubtilesJ;
       auto ii = subtileI * mma::Tile::M;
       auto jj = subtileJ * mma::Tile::N;
       for (int k = 0; k < d; k += mma::Tile::K) {
-        mma::load_matrix_sync(q_frag, _Q, ii, k, dp);
-        mma::load_matrix_sync(k_frag, _K, jj, k, dp);
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(q_frag, _Q, ii, k, dp);
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(k_frag, _K, jj, k, dp);
         mma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
       // apply scaling
       for (int t = 0; t < s_frag.size; t++)
         s_frag.reg[t] *= softmax_scale;
-      // mma::store_matrix_sync(&_S[ii * Bc + jj], s_frag, Bc);
-      mma::store_matrix_sync(_S, ii, jj, Bc, s_frag);
+      // later to be consumed by fragment A -> skew every M pack of rows
+      mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_S, ii, jj, Bc, s_frag);
     }
     __syncthreads();
 
@@ -120,13 +122,15 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     for (auto ii = iiStart; ii < iiEnd; ii++) {
       float row_m = -INFINITY;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
-        row_m = common::float_max(row_m, _S[Bc * ii + jj]);
+        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        row_m = common::float_max(row_m, _S[Bc * ii + jj_sw]);
       }
       row_m = common::warpReduce<common::float_max>(row_m);
-      mcur[ii-iiStart] = row_m;
+      mcur[ii - iiStart] = row_m;
       for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        float Pij = __expf(_S[Bc * ii + jj] - row_m);
-        _S[Bc * ii + jj] = (ii < Brc && jj < Bcc) ? Pij : 0.f;
+        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        float Pij = __expf(_S[Bc * ii + jj_sw] - row_m);
+        _S[Bc * ii + jj_sw] = (ii < Brc && jj < Bcc) ? Pij : 0.f;
       }
     }
     __syncthreads();
@@ -145,26 +149,27 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
       auto subtileK = subTile % numSubtilesK;
       auto ii = subtileI * mma::Tile::M;
       auto k = subtileK * mma::Tile::N;
-      for (int jj = 0; jj < Bc; jj += mma::Tile::K) {
-        mma::load_matrix_sync(p_frag, _S, ii, jj, Bc);
-        mma::load_matrix_sync(v_frag, _V, jj, k, dp);  // V: Bc x d
+      for (uint32_t jj = 0; jj < Bc; jj += mma::Tile::K) {
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(p_frag, _S, ii, jj, Bc);
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(v_frag, _V, jj, k, dp);
         mma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
       }
-      // mma::store_matrix_sync(&_PV[ii * dp + k], pv_frag, dp);
-      mma::store_matrix_sync(_PV, ii, k, dp, pv_frag);
+      // mma::store_matrix_sync(_PV, ii, k, dp, pv_frag);
+      mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_PV, ii, k, dp, pv_frag);
     }
     __syncthreads();
-
 
     // Write O,l, and m to global memory
     for (auto ii = iiStart; ii < iiEnd; ii++) {
       auto i = iStart + ii;
-      auto row_m = mcur[ii-iiStart];
+      auto row_m = mcur[ii - iiStart];
 
       // compute row_l
       float row_l = 0.f;
       for (int jj = tx; jj < Bcc; jj += warpSize) {
-        row_l += _S[Bc * ii + jj];
+        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        row_l += _S[Bc * ii + jj_sw];
+        // row_l += _S[Bc * ii + jj];
       }
       row_l = common::warpReduce<common::float_add>(row_l);
 
@@ -176,10 +181,12 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
 
       // compute O
       for (int k = tx; k < d; k += blockDim.x) {
+        auto k_sw = common::getSkewCol<mma::Tile::M>(ii, k, dp);
+        auto pv = _PV[ii * dp + k_sw];
         O[qkv_offset + i * d + k] =
             ((row_l_prev * __expf(row_m_prev - row_m_new) *
               O[qkv_offset + i * d + k]) +
-             (__expf(row_m - row_m_new) * _PV[ii * dp + k])) /
+             (__expf(row_m - row_m_new) * pv)) /
             row_l_new;
       }
       // save row max and row sum

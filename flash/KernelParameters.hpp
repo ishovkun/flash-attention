@@ -1,4 +1,3 @@
-
 #pragma once
 #include "common.hpp"
 #include "launch.hpp"
@@ -130,8 +129,7 @@ public:
         headDim(headDim) {}
 
   dim3 tileSize() {
-    auto ts =
-        std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
 
@@ -360,6 +358,9 @@ public:
     case KernelType::mma_sync:
       return std::make_unique<MMASyncKernelParameters>(batchSize, numHeads,
                                                        seqLen, headDim);
+    case KernelType::mma_sync_swizzle:
+      return std::make_unique<MMASyncKernelParameters>(batchSize, numHeads,
+                                                         seqLen, headDim);
     case KernelType::block_wmma_async:
       return std::make_unique<BlockWMMAAsyncKernelParameters>(
           batchSize, numHeads, seqLen, headDim);

@@ -96,6 +96,9 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("mma sync", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::mma_sync);
   });
+  ret &= run_and_compare("mma sync swizzle", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::mma_sync_swizzle);
+  });
   ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
   });
@@ -178,6 +181,7 @@ auto main(int argc, char *argv[]) -> int {
     time_kernel(q, k, v, flash::KernelType::block_wmma_sync);
     time_kernel(q, k, v, flash::KernelType::wmma_sync_row_block);
     time_kernel(q, k, v, flash::KernelType::mma_sync);
+    time_kernel(q, k, v, flash::KernelType::mma_sync_swizzle);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
   }
 
