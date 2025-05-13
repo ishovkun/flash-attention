@@ -156,8 +156,7 @@ class WarpWMMASyncKernelParameters : public KernelParametersBase {
   uint headDim;
 
 public:
-  WarpWMMASyncKernelParameters(int batchSize, int numHeads, int seqLen,
-                               int headDim)
+  WarpWMMASyncKernelParameters(int batchSize, int numHeads, int seqLen, int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
 

@@ -45,10 +45,10 @@ inline __device__ uint32_t getSwizzledColumn(uint32_t row, uint32_t col,
   return (row ^ col) % numCols;
 }
 
-template <uint32_t baseRow = 1>
+template <uint32_t baseRow = UINT32_MAX>
 inline __device__ uint32_t getSkewCol(uint32_t row, uint32_t col,
                                       uint32_t numCols) {
-  constexpr uint32_t skew = 1;
+  constexpr uint32_t skew = 4;
   return (col + (row % baseRow)*skew) % numCols;
 }
 

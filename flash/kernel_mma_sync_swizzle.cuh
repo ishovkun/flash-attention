@@ -68,7 +68,12 @@ __global__ void kernel_mma_sync_swizzle(
       auto inBounds = k < d;
 
       // auto k_sw = common::getSwizzledColumn(ii % mma::Tile::M, k, dp);
-      auto k_sw = common::getSkewCol<mma::Tile::M>(ii, k, dp);
+      // auto k_sw = common::getSkewCol<mma::Tile::M>(ii, k, dp);
+
+      // we skew by tile::N and not tile::M because
+      // lanes [[0],[4],[8]...] load
+      // rows  [[0,8],[1,9],[2,10],...]
+      auto k_sw = common::getSkewCol<mma::Tile::N>(ii, k, dp);
       _Q[ii*dp + k_sw] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
       // _Q[ii*dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
     }
@@ -106,7 +111,8 @@ __global__ void kernel_mma_sync_swizzle(
       auto ii = subtileI * mma::Tile::M;
       auto jj = subtileJ * mma::Tile::N;
       for (int k = 0; k < d; k += mma::Tile::K) {
-        mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(q_frag, _Q, ii, k, dp);
+        // mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(q_frag, _Q, ii, k, dp);
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(q_frag, _Q, ii, k, dp);
         mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(k_frag, _K, jj, k, dp);
         mma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
@@ -114,7 +120,8 @@ __global__ void kernel_mma_sync_swizzle(
       for (int t = 0; t < s_frag.size; t++)
         s_frag.reg[t] *= softmax_scale;
       // later to be consumed by fragment A -> skew every M pack of rows
-      mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_S, ii, jj, Bc, s_frag);
+      // mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_S, ii, jj, Bc, s_frag);
+      mma::store_matrix_sync<common::getSkewCol<mma::Tile::N>>(_S, ii, jj, Bc, s_frag);
     }
     __syncthreads();
 
@@ -122,13 +129,13 @@ __global__ void kernel_mma_sync_swizzle(
     for (auto ii = iiStart; ii < iiEnd; ii++) {
       float row_m = -INFINITY;
       for (int jj = tx; jj < Bcc; jj += blockDim.x) {
-        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        auto jj_sw = common::getSkewCol<mma::Tile::N>(ii, jj, Bc);
         row_m = common::float_max(row_m, _S[Bc * ii + jj_sw]);
       }
       row_m = common::warpReduce<common::float_max>(row_m);
       mcur[ii - iiStart] = row_m;
       for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        auto jj_sw = common::getSkewCol<mma::Tile::N>(ii, jj, Bc);
         float Pij = __expf(_S[Bc * ii + jj_sw] - row_m);
         _S[Bc * ii + jj_sw] = (ii < Brc && jj < Bcc) ? Pij : 0.f;
       }
@@ -150,12 +157,14 @@ __global__ void kernel_mma_sync_swizzle(
       auto ii = subtileI * mma::Tile::M;
       auto k = subtileK * mma::Tile::N;
       for (uint32_t jj = 0; jj < Bc; jj += mma::Tile::K) {
-        mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(p_frag, _S, ii, jj, Bc);
+        // mma::load_matrix_sync<common::getSkewCol<mma::Tile::M>>(p_frag, _S, ii, jj, Bc);
+        mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(p_frag, _S, ii, jj, Bc);
         mma::load_matrix_sync<common::getSkewCol<mma::Tile::N>>(v_frag, _V, jj, k, dp);
         mma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
       }
       // mma::store_matrix_sync(_PV, ii, k, dp, pv_frag);
-      mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_PV, ii, k, dp, pv_frag);
+      // mma::store_matrix_sync<common::getSkewCol<mma::Tile::M>>(_PV, ii, k, dp, pv_frag);
+      mma::store_matrix_sync<common::getSkewCol<mma::Tile::N>>(_PV, ii, k, dp, pv_frag);
     }
     __syncthreads();
 
@@ -167,7 +176,7 @@ __global__ void kernel_mma_sync_swizzle(
       // compute row_l
       float row_l = 0.f;
       for (int jj = tx; jj < Bcc; jj += warpSize) {
-        auto jj_sw = common::getSkewCol<mma::Tile::M>(ii, jj, Bc);
+        auto jj_sw = common::getSkewCol<mma::Tile::N>(ii, jj, Bc);
         row_l += _S[Bc * ii + jj_sw];
         // row_l += _S[Bc * ii + jj];
       }
@@ -181,7 +190,7 @@ __global__ void kernel_mma_sync_swizzle(
 
       // compute O
       for (int k = tx; k < d; k += blockDim.x) {
-        auto k_sw = common::getSkewCol<mma::Tile::M>(ii, k, dp);
+        auto k_sw = common::getSkewCol<mma::Tile::N>(ii, k, dp);
         auto pv = _PV[ii * dp + k_sw];
         O[qkv_offset + i * d + k] =
             ((row_l_prev * __expf(row_m_prev - row_m_new) *
