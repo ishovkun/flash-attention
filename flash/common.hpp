@@ -51,6 +51,13 @@ inline __device__ uint32_t getSkewCol(uint32_t row, uint32_t col,
   return (col + (row % baseRow)*skew) % numCols;
 }
 
+template <uint32_t skew = 1, uint32_t baseRow = UINT32_MAX>
+inline __device__ uint32_t getUnskewCol(uint32_t row, uint32_t col,
+                                      uint32_t numCols) {
+  auto const offset = ((row % baseRow)*skew) % numCols;
+  return (col + numCols - offset) % numCols;
+}
+
 
 inline __device__ uint32_t swap(uint32_t& x, uint32_t & y) {
   uint32_t temp = x;

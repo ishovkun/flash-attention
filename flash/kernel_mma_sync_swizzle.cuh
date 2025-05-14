@@ -34,8 +34,9 @@ __global__ void kernel_mma_sync_swizzle(
   // bug is here
   constexpr auto rowsPerWarp = common::ceil_div(Br, numWarps);
   float mcur[rowsPerWarp];
-
-  // bug: Br != Bc, but we save PV into K (Bc x d)
+  // float attention[rowsPerWarp];
+  // for (int ii = 0; ii < rowsPerWarp; ii++)
+  //   attention[i] = 0.f;
 
   // shared memory for tiles
   extern __shared__ float sram[];
@@ -57,6 +58,7 @@ __global__ void kernel_mma_sync_swizzle(
 
   constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
   constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
+  constexpr auto unswizzleFuncA = common::getUnskewCol<mma::Tile::M/2, mma::Tile::M/2>;
 
   // set l and m to default values
   for (int i = iStart + warp * warpSize + tx; i < iEnd; i += warpSize * numWarps) {
@@ -83,7 +85,6 @@ __global__ void kernel_mma_sync_swizzle(
       auto j = jStart + jj;
       for (int k = tx; k < dp; k += warpSize) {
         auto inBounds = jj < Bcc && k < d;
-        // auto k_sw = common::getSkewCol<mma::Tile::N>(jj, k, dp); // swizzle column
         auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
         _K[jj*dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
         _V[jj*dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
@@ -99,7 +100,7 @@ __global__ void kernel_mma_sync_swizzle(
 
     constexpr auto numSubtilesI = common::ceil_div(Br, mma::Tile::M);
     constexpr auto numSubtilesJ = common::ceil_div(Bc, mma::Tile::N);
-    auto numSubtilesQK = numSubtilesI * numSubtilesJ;
+    constexpr auto numSubtilesQK = numSubtilesI * numSubtilesJ;
     for (uint32_t subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
       mma::fill_fragment(s_frag, 0.f);
       auto subtileI = subTile / numSubtilesJ;
@@ -121,16 +122,19 @@ __global__ void kernel_mma_sync_swizzle(
     // P = exp(S)
     for (auto ii = iiStart; ii < iiEnd; ii++) {
       float row_m = -INFINITY;
-      for (int jj = tx; jj < Bcc; jj += blockDim.x) {
-        auto jj_sw = swizzleFuncA(ii, jj, Bc);
-        row_m = common::float_max(row_m, _S[Bc * ii + jj_sw]);
+      for (int jj_sw = tx; jj_sw < Bc; jj_sw += blockDim.x) {
+        auto jj = unswizzleFuncA(ii, jj_sw, Bc);
+        auto Sij = _S[Bc * ii + jj_sw];
+        Sij = (jj < Bcc) ? Sij : -INFINITY;
+        row_m = common::float_max(row_m, Sij);
       }
       row_m = common::warpReduce<common::float_max>(row_m);
       mcur[ii - iiStart] = row_m;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        auto jj_sw = swizzleFuncA(ii, jj, Bc);
+      for (int jj_sw = tx; jj_sw < Bc; jj_sw += blockDim.x) {
+        auto jj = unswizzleFuncA(ii, jj_sw, Bc);
         float Pij = __expf(_S[Bc * ii + jj_sw] - row_m);
-        _S[Bc * ii + jj_sw] = (ii < Brc && jj < Bcc) ? Pij : 0.f;
+        Pij = (jj < Bcc) ? Pij : 0.f;
+        _S[Bc * ii + jj_sw] = Pij;
       }
     }
     __syncthreads();

@@ -200,11 +200,15 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   case KernelType::mma_sync: {
     constexpr auto rowsPerBlock = MMASyncKernelParameters::rowsPerBlock();
     constexpr auto warpsPerBlock = MMASyncKernelParameters::warpsPerBlock();
-    if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile) {
+    if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
     else if (constexpr uint32_t colsPerTile = 96; tileSize.x == colsPerTile) {
+      launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
+                          kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
+    }
+    else if (constexpr uint32_t colsPerTile = 72; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
@@ -213,6 +217,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                           kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
     else if (constexpr uint32_t colsPerTile = 48; tileSize.x == colsPerTile) {
+      launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
+                          kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
+    }
+    else if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
@@ -225,11 +233,15 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     constexpr auto rowsPerBlock = MMASyncKernelParameters::rowsPerBlock();
     constexpr auto warpsPerBlock = MMASyncKernelParameters::warpsPerBlock();
     std::cout << "tile = " << tileSize.x << ", " << tileSize.y << std::endl;
-    if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile) {
+    if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
     else if (constexpr uint32_t colsPerTile = 96; tileSize.x == colsPerTile) {
+      launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
+                          kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
+    }
+    else if (constexpr uint32_t colsPerTile = 72; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
@@ -238,6 +250,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                           kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
     else if (constexpr uint32_t colsPerTile = 48; tileSize.x == colsPerTile) {
+      launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
+                          kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
+    }
+    else if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile) {
       launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams,
                           kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
     }
