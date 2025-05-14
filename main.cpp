@@ -18,6 +18,10 @@ auto manual_attn(auto q, auto k, auto v) {
 
 auto generate_data(auto const &p) {
   torch::manual_seed(0);
+  std::cout << "Generate sample: " << "Batch " << p.batch_size
+            << " Num Heads " << p.num_heads  << " Seq len " << p.seq_len
+            << " Head embedding " << p.head_embd
+            << std::endl;
   auto q = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
   auto k = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
   auto v = torch::randn({p.batch_size, p.num_heads, p.seq_len, p.head_embd}).cuda();
@@ -28,12 +32,8 @@ bool run_and_compare(auto test_name, auto reference, double atol, double rtol,
                      auto &&kernel) {
   auto result = kernel();
   bool test_result = torch::allclose(result, reference, atol, rtol);
-  // std::cout << "Reference: " << reference << std::endl;
-  // std::cout << "Result: " << result << std::endl;
   if (!test_result) {
     std::cout << test_name << ": Test failed [☓ ]" << std::endl;
-    // std::cout << "Reference: " << reference << std::endl;
-    // std::cout << "Result: " << result << std::endl;
     int mismatch_count = 0;
     for (int b = 0; b < result.size(0); b++) {
       for (int h = 0; h < result.size(1); h++) {
@@ -155,12 +155,6 @@ auto main(int argc, char *argv[]) -> int {
     });
   }
   else { // profile
-    AttentionParameters params{
-        .batch_size = 5,
-        .num_heads = 12,
-        .seq_len = 53,
-        .head_embd = 69,
-    };
     auto [q, k, v] = generate_data(AttentionParameters{
             // gpt3
             .batch_size = 4,
