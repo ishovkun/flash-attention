@@ -50,6 +50,9 @@ scalar_2d_row_tile_result = pyflash.scalar2d_row_tile(q, k, v)
 warp_wmma_sync_result = pyflash.warp_wmma_sync(q, k, v)
 block_wmma_sync_result = pyflash.block_wmma_sync(q, k, v)
 block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
+block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
+mma_result = pyflash.mma_sync(q, k, v)
+mma_swizle_result = pyflash.mma_sync_swizzle(q, k, v)
 
 def profile_kernel(kernel, q, k, v, gpu_time_only):
     with profiler.profile(use_device='cuda') as prof:
@@ -66,5 +69,7 @@ profile_kernel(pyflash.scalar2d, q, k, v, gpu_time_only=profiler_print_cuda_time
 profile_kernel(pyflash.scalar2d_row_tile, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.warp_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.block_wmma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
-profile_kernel(pyflash.block_wmma_sync_row_block, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.block_wmma_async, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.block_wmma_sync_row_block, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.mma_sync, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.mma_sync_swizzle, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
