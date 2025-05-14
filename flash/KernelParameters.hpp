@@ -248,7 +248,7 @@ public:
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, mma::Tile::N)) {}
 
-  static constexpr uint32_t rowsPerBlock() { return 3 * mma::Tile::M; }
+  static constexpr uint32_t rowsPerBlock() { return 2 * mma::Tile::M; }
   static constexpr uint32_t warpsPerBlock() { return 12; }
   dim3 tileSize() {
     // Ampere: Up to 160KB of shared memory
