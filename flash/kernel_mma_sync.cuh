@@ -94,7 +94,7 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     mma::FragmentB<mma::Layout::col_major> k_frag;
     mma::FragmentAccumulator s_frag;
 
-    auto numSubtilesI = common::ceil_div(Br, mma::Tile::M);
+    constexpr auto numSubtilesI = common::ceil_div(Br, mma::Tile::M);
     auto numSubtilesJ = common::ceil_div(Bc, mma::Tile::N);
     auto numSubtilesQK = numSubtilesI * numSubtilesJ;
     for (int subTile = warp; subTile < numSubtilesQK; subTile += numWarps) {
