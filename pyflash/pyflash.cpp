@@ -35,6 +35,17 @@ static torch::Tensor forward_block_wmma_async(torch::Tensor Q, torch::Tensor K,
   return flash::forward(Q, K, V, flash::KernelType::block_wmma_sync);
 }
 
+static torch::Tensor forward_mma_sync(torch::Tensor Q, torch::Tensor K,
+                                       torch::Tensor V) {
+  return flash::forward(Q, K, V, flash::KernelType::mma_sync);
+}
+
+static torch::Tensor forward_mma_sync_swizzle(torch::Tensor Q, torch::Tensor K,
+                                       torch::Tensor V) {
+  return flash::forward(Q, K, V, flash::KernelType::mma_sync_swizzle);
+}
+
+
 TORCH_LIBRARY(pyflash, m) {
   m.def("naive(Tensor Q, Tensor K, Tensor V) -> Tensor",
         torch::wrap_pybind_function(forward_naive));
@@ -50,4 +61,8 @@ TORCH_LIBRARY(pyflash, m) {
         torch::wrap_pybind_function(forward_wmma_sync_row_block));
   m.def("block_wmma_async(Tensor Q, Tensor K, Tensor V) -> Tensor",
         torch::wrap_pybind_function(forward_block_wmma_async));
+  m.def("mma_sync(Tensor Q, Tensor K, Tensor V) -> Tensor",
+        torch::wrap_pybind_function(forward_mma_sync));
+  m.def("mma_sync_swizzle(Tensor Q, Tensor K, Tensor V) -> Tensor",
+        torch::wrap_pybind_function(forward_mma_sync_swizzle));
 }
