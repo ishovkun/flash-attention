@@ -173,7 +173,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
       .m = m,
       .O = &O,
       .softmax_scale = softmax_scale,
-      .param = FlashKernelParametersFactory::create(B, nh, N, d, kernelType),
+      .param = KernelParametersFactory::create(B, nh, N, d, kernelType),
   };
   auto const tileSize = args.param->tileSize();
   auto const blockDim = args.param->blockDim();
@@ -182,7 +182,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   // std::endl; std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y
   // << std::endl; std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y
   // << ", " << gridDim.z << std::endl;
-
 
   // launch kernel
   switch (kernelType) {
@@ -208,8 +207,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     launchKernel<true>(args, block_wmma_async);
     break;
   case KernelType::mma_sync: {
-    constexpr auto rowsPerBlock = MMASyncKernelParameters::rowsPerBlock();
-    constexpr auto warpsPerBlock = MMASyncKernelParameters::warpsPerBlock();
+    constexpr auto rowsPerBlock = MMASyncParameters::rowsPerBlock();
+    constexpr auto warpsPerBlock = MMASyncParameters::warpsPerBlock();
     if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile)
       launchKernel<false>(args, kernel_mma_sync<rowsPerBlock, colsPerTile, warpsPerBlock>);
     else if (constexpr uint32_t colsPerTile = 96; tileSize.x == colsPerTile)
@@ -227,8 +226,8 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   }
   case KernelType::mma_sync_swizzle: {
-    constexpr auto rowsPerBlock = MMASyncKernelParameters::rowsPerBlock();
-    constexpr auto warpsPerBlock = MMASyncKernelParameters::warpsPerBlock();
+    constexpr auto rowsPerBlock = MMASyncParameters::rowsPerBlock();
+    constexpr auto warpsPerBlock = MMASyncParameters::warpsPerBlock();
     std::cout << "tile = " << tileSize.x << ", " << tileSize.y << std::endl;
     if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile)
       launchKernel<false>(args, kernel_mma_sync_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
@@ -246,12 +245,12 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
       unsupportedDimensions(tileSize, blockDim, kernelType);
     break;
   }
-  // case KernelType::mma_sync_qreg: {
+  case KernelType::mma_sync_qreg: {
   //   constexpr auto rowsPerBlock = MMASyncRegKernelParameters::rowBlock();
   //   constexpr auto warpsPerBlock = MMASyncRegKernelParameters::warpsPerBlock();
   //   launchKernel<false>(Q, K, V, l, m, O, softmax_scale, *kernelParams, kernel_mma_sync_qreg<>);
-  //   break;
-  // }
+    break;
+  }
   default:
     throw std::invalid_argument("Unsupported kernel type");
   }
