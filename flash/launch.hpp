@@ -14,6 +14,7 @@ enum class KernelType {
   block_wmma_async,
   mma_sync,
   mma_sync_swizzle,
+  mma_sync_qreg,
 };
 
 

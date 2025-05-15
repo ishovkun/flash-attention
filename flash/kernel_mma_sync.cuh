@@ -61,9 +61,6 @@ kernel_mma_sync(float const *__restrict__ Q, // query vector
     m[lm_offset + i] = -INFINITY;
   }
 
-  // Split Sij into numWarpsI x numWarpsJ
-  // auto rowsPerWarp = Br / numWarps;
-
   // Load Q tile
   for (int ii = warp; ii < Brc; ii += numWarps) {
     auto i = iStart + ii;

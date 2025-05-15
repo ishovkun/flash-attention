@@ -115,8 +115,8 @@ __device__ inline void fill_fragment(FragmentAccumulator &frag, float value) {
 }
 
 template<U32ColumnIndexFunc auto returnColumnFunc = returnColumn>
-__device__ inline void store_matrix_sync(float *ptr, uint32_t tileFirstRow,
-                                          uint32_t tileFirstCol, uint32_t stride,
+__device__ inline void store_matrix_sync(float *ptr, uint32_t fragFirstRow,
+                                          uint32_t fragFirstCol, uint32_t stride,
                                           FragmentAccumulator &frag) {
   /*
    groupID           = %laneid >> 2
@@ -131,10 +131,10 @@ __device__ inline void store_matrix_sync(float *ptr, uint32_t tileFirstRow,
 
   #pragma unroll
   for (int i = 0; i < 4; i++) {
-    uint32_t tileRow = (i < 2) ? group : group + 8;
-    uint32_t tileCol = 2 * member + (i & 0x1);
-    uint32_t row = tileFirstRow + tileRow;
-    uint32_t col = tileFirstCol + tileCol;
+    uint32_t fragRow = (i < 2) ? group : group + 8;
+    uint32_t fragCol = 2 * member + (i & 0x1);
+    uint32_t row = fragFirstRow + fragRow;
+    uint32_t col = fragFirstCol + fragCol;
     col = returnColumnFunc(row, col, stride);
     ptr[stride * row + col] = frag.reg[i];
   }

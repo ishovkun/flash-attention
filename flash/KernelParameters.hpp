@@ -66,6 +66,7 @@ public:
   virtual uint sramSize() = 0;
   virtual dim3 blockDim() = 0;
   virtual dim3 gridDim() = 0;
+  virtual ~KernelParametersBase() = default;
 };
 
 class NaiveKernelParameters : public KernelParametersBase {
@@ -101,8 +102,7 @@ public:
         headDim(headDim) {}
 
   dim3 tileSize() {
-    auto ts =
-        std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
+    auto ts = std::min(maxTileSizeForDeviceSharedMemory(headDim), maxWarpsPerBlock);
     return dim3(ts, ts);
   }
 
