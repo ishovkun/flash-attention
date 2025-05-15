@@ -49,7 +49,7 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       Kj[jj * d + k] = (j < N) ? K[qkv_offset + j * d + k] : 0.f;
       Vj[jj * d + k] = (j < N) ? V[qkv_offset + j * d + k] : 0.f;
     }
-    // __syncthreads();
+    // sync_threads();
 
     for (int iStart = 0; iStart < N; iStart += Br) { // loop i tiles
       auto ii = ty;
@@ -58,7 +58,7 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       // Load Qi
       for (int k = tx; k < d; k += blockDim.x)
         Qi[ii * d + k] = (i < N) ? Q[qkv_offset + i * d + k] : 0.f;
-      // __syncthreads();// -- not needed
+      // sync_threads();// -- not needed
 
       // Compute Sij and row_max
       float row_m = -INFINITY;
@@ -91,7 +91,7 @@ forward_kernel_2d(float const *__restrict__ Q, // query vector
       float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                         __expf(row_m - row_m_new) * row_l;
 
-      // __syncthreads(); -- no need <= there is only one warp in j direction
+      // sync_threads(); -- no need <= there is only one warp in j direction
 
       // Product Oik = Pin * Vnk
       // O[Br,d] = S[Br, Bc] * V[Bc, d]

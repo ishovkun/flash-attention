@@ -48,7 +48,7 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
           Kj[(tx * d) + x] = (j*Bc + tx < N) ? K[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
           Vj[(tx * d) + x] = (j*Bc + tx < N) ? V[qkv_offset + (tile_size * j) + (tx * d) + x] : 0.f;
       }
-      __syncthreads();  // such that the inner loop can use the correct Kj, Vj
+      __syncthreads();
 
         for (int i = 0; i < Tr; i++)  { // i tile
             // true ii = (Br*d*i) + (tx * d)
@@ -101,7 +101,7 @@ void naive_forward_kernel(const float* Q, const float* K, const float* V, const 
               l[lm_offset + (Bc * i) + tx] = row_l_new;
             }
         }
-        __syncthreads();  // otherwise, thread can use the wrong Kj, Vj in inner loop
+        __syncthreads();
     }
 }
 

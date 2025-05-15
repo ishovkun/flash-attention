@@ -149,14 +149,14 @@ public:
   }
 };
 
-class WarpWMMASyncParameters : public KernelParametersBase {
+class WarpWMMAParameters : public KernelParametersBase {
   uint batchSize;
   uint numHeads;
   uint seqLen;
   uint headDim;
 
 public:
-  WarpWMMASyncParameters(int batchSize, int numHeads, int seqLen, int headDim)
+  WarpWMMAParameters(int batchSize, int numHeads, int seqLen, int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
 
@@ -171,14 +171,14 @@ public:
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
 };
 
-class BlockWMMASyncParameters : public KernelParametersBase {
+class BlockWMMAParameters : public KernelParametersBase {
   uint batchSize;
   uint numHeads;
   uint seqLen;
   uint headDim;
 
 public:
-  BlockWMMASyncParameters(int batchSize, int numHeads, int seqLen,
+  BlockWMMAParameters(int batchSize, int numHeads, int seqLen,
                                 int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
@@ -202,14 +202,14 @@ public:
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
 };
 
-class WMMASyncRowBlockParameters : public KernelParametersBase {
+class WMMARowBlockParameters : public KernelParametersBase {
   uint batchSize;
   uint numHeads;
   uint seqLen;
   uint headDim;
 
 public:
-  WMMASyncRowBlockParameters(int batchSize, int numHeads, int seqLen,
+  WMMARowBlockParameters(int batchSize, int numHeads, int seqLen,
                                    int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, wmma::WMMA_N)) {}
@@ -237,14 +237,14 @@ public:
   }
 };
 
-class MMASyncParameters : public KernelParametersBase {
+class MMAParameters : public KernelParametersBase {
   uint batchSize;
   uint numHeads;
   uint seqLen;
   uint headDim;
 
 public:
-  MMASyncParameters(int batchSize, int numHeads, int seqLen, int headDim)
+  MMAParameters(int batchSize, int numHeads, int seqLen, int headDim)
       : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
         headDim(common::nextMultiple(headDim, mma::Tile::N)) {}
 
@@ -329,11 +329,29 @@ public:
   dim3 gridDim() { return {batchSize, numHeads, 1}; }
 };
 
-class MMASyncQregParameters : public KernelParametersBase {
-  uint batchSize;
-  uint numHeads;
-  uint seqLen;
-  uint headDim;
+class MMAQregParameters : public KernelParametersBase {
+  uint batchSize, numHeads, seqLen, headDim;
+ public:
+  MMAQregParameters(int batchSize, int numHeads, int seqLen, int headDim)
+    : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+      headDim(common::nextMultiple(headDim, mma::Tile::N))
+  {}
+
+  static constexpr uint32_t warpsPerBlock() { return rowsPerTileQ() / mma::Tile::M; }
+  static constexpr uint32_t rowsPerTileQ() { return 2 * mma::Tile::M; }
+  static constexpr uint32_t rowsPerTileK() { return rowsPerTileQ() / 2; }
+  dim3 tileSize() override { return dim3(rowsPerTileK(), rowsPerTileQ(), headDim); }
+  uint32_t sramSize() override {
+    auto tile = tileSize();
+    auto Br = tile.y;
+    auto Bc = tile.x;
+    return sizeof(float)*(max(Br, 2*Bc)*headDim + Br*Bc);
+  }
+  dim3 blockDim() override { return dim3(common::warpSize, warpsPerBlock()); }
+  dim3 gridDim() override {
+    uint blocksPerHead = common::ceil_div(seqLen, tileSize().y);
+    return {batchSize, numHeads, blocksPerHead};
+  }
 };
 
 class KernelParametersFactory {
@@ -352,24 +370,23 @@ public:
     case KernelType::scalar2D_row_tile:
       return std::make_unique<Scalar2DRowTileParameters>(
           batchSize, numHeads, seqLen, headDim);
-    case KernelType::warp_wmma_sync:
-      return std::make_unique<WarpWMMASyncParameters>(batchSize, numHeads,
+    case KernelType::warp_wmma:
+      return std::make_unique<WarpWMMAParameters>(batchSize, numHeads,
                                                             seqLen, headDim);
-    case KernelType::block_wmma_sync:
-      return std::make_unique<BlockWMMASyncParameters>(
+    case KernelType::block_wmma:
+      return std::make_unique<BlockWMMAParameters>(
           batchSize, numHeads, seqLen, headDim);
-    case KernelType::wmma_sync_row_block:
-      return std::make_unique<WMMASyncRowBlockParameters>(
+    case KernelType::wmma_row_block:
+      return std::make_unique<WMMARowBlockParameters>(
           batchSize, numHeads, seqLen, headDim);
-    case KernelType::mma_sync:
-      return std::make_unique<MMASyncParameters>(batchSize, numHeads,
-                                                       seqLen, headDim);
-    case KernelType::mma_sync_swizzle:
-      return std::make_unique<MMASyncParameters>(batchSize, numHeads,
-                                                         seqLen, headDim);
+    case KernelType::mma:
+      return std::make_unique<MMAParameters>(batchSize, numHeads, seqLen, headDim);
+    case KernelType::mma_swizzle:
+      return std::make_unique<MMAParameters>(batchSize, numHeads, seqLen, headDim);
+      case KernelType::mma_qreg:
+        return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::block_wmma_async:
-      return std::make_unique<BlockWMMAAsyncParameters>(
-          batchSize, numHeads, seqLen, headDim);
+      return std::make_unique<BlockWMMAAsyncParameters>( batchSize, numHeads, seqLen, headDim);
     default: {
       std::ostringstream err;
       err << __FILE__ << "(" << __LINE__ << ") "
