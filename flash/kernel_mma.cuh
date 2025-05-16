@@ -154,7 +154,7 @@ kernel_mma(float const *__restrict__ Q, // query vector
     // Write O,l, and m to global memory
     for (auto ii = iiStart; ii < iiEnd; ii++) {
       auto i = iStart + ii;
-      auto row_m = mcur[ii-iiStart];
+      auto row_m = mcur[ii - iiStart];
 
       // compute row_l
       float row_l = 0.f;

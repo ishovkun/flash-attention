@@ -36,6 +36,7 @@ inline std::string to_string(flash::KernelType type)
     case block_wmma_async: return "block_wmma_async";
     case mma: return "mma";
     case mma_swizzle: return "mma_swizzle";
+    case mma_qreg: return "mma_qreg";
     default: throw std::invalid_argument("wrong kernel type");
   }
 }

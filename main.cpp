@@ -85,22 +85,25 @@ void test_alg(AttentionParameters const &params) {
     return flash::forward(q, k, v, flash::KernelType::scalar2D_row_tile);
   });
   ret &= run_and_compare("Single-warp wmma sync", manual_result, atol, rtol, [&] {
-        return flash::forward(q, k, v, flash::KernelType::warp_wmma_sync);
+        return flash::forward(q, k, v, flash::KernelType::warp_wmma);
       });
   ret &= run_and_compare("Block wmma sync", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::block_wmma_sync);
+    return flash::forward(q, k, v, flash::KernelType::block_wmma);
   });
   ret &= run_and_compare("wmma sync row-block", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::wmma_sync_row_block);
+    return flash::forward(q, k, v, flash::KernelType::wmma_row_block);
   });
   ret &= run_and_compare("mma sync", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::mma_sync);
+    return flash::forward(q, k, v, flash::KernelType::mma);
   });
   ret &= run_and_compare("mma sync swizzle", manual_result, atol, rtol, [&] {
-    return flash::forward(q, k, v, flash::KernelType::mma_sync_swizzle);
+    return flash::forward(q, k, v, flash::KernelType::mma_swizzle);
   });
   ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
+  });
+  ret &= run_and_compare("mma sync qreg", manual_result, atol, rtol, [&] {
+    return flash::forward(q, k, v, flash::KernelType::mma_qreg);
   });
   if (!ret) {
     std::cout << "Test failed!" << std::endl;
@@ -171,28 +174,14 @@ auto main(int argc, char *argv[]) -> int {
     // time_kernel(q, k, v, flash::KernelType::naive1D);
     // time_kernel(q, k, v, flash::KernelType::scalar2D);
     // time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
-    // time_kernel(q, k, v, flash::KernelType::warp_wmma_sync);
-    time_kernel(q, k, v, flash::KernelType::block_wmma_sync);
-    time_kernel(q, k, v, flash::KernelType::wmma_sync_row_block);
-    time_kernel(q, k, v, flash::KernelType::mma_sync);
-    time_kernel(q, k, v, flash::KernelType::mma_sync_swizzle);
+    // time_kernel(q, k, v, flash::KernelType::warp_wmma);
+    time_kernel(q, k, v, flash::KernelType::block_wmma);
+    time_kernel(q, k, v, flash::KernelType::wmma_row_block);
+    time_kernel(q, k, v, flash::KernelType::mma);
+    time_kernel(q, k, v, flash::KernelType::mma_swizzle);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
   }
 
-
-  // current development
-  // {
-  //   AttentionParameters params{
-  //       .batch_size = 1,
-  //       .num_heads = 1,
-  //       .seq_len = 64,
-  //       .head_embd = 32,
-  //   };
-  //   // std::cout << "testing async" << std::endl;
-  //   // auto [q, k, v] = generate_data(params);
-  //   // // auto manual_result = manual_attn(q, k, v);
-  //   // flash::forward(q, k, v, flash::KernelType::block_wmma_async);
-  // }
 
   // # GPT2 parameters. Slower if seq_len is too big.
   // AttentionParameters params{

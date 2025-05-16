@@ -2,11 +2,33 @@
 //
 [
     {
-        "label": "[cmake] Flash Attention",
+        "label": "cmake gcc [release]",
         "command": "mkdir -p build && cd build && cmake -G Ninja ..",
         "args": [
             "-DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DCMAKE_CXX_COMPILER=g++",
+            "-DCMAKE_CUDA_ARCHITECTURES=80",
+            "-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        ],
+        "env": { "foo": "bar" },
+        "cwd": "$ZED_WORKTREE_ROOT",
+        "use_new_terminal": false,
+        "allow_concurrent_runs": false,
+        "reveal": "no_focus",
+        "reveal_target": "dock",
+        "hide": "never",
+        "shell": "system",
+        "tags": []
+    },
+    {
+        "label": "cmake clang [release]",
+        "command": "mkdir -p build && cd build && cmake -G Ninja ..",
+        "args": [
+            "-DTorch_DIR=/home/ishovkun/miniconda3/lib/python3.12/site-packages/torch/share/cmake/Torch",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DCMAKE_CXX_COMPILER=clang++",
             "-DCMAKE_CUDA_ARCHITECTURES=80",
             "-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc",
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"

@@ -356,10 +356,7 @@ class MMAQregParameters : public KernelParametersBase {
 
 class KernelParametersFactory {
 public:
-  static std::unique_ptr<KernelParametersBase> create(int batchSize,
-                                                      int numHeads, int seqLen,
-                                                      int headDim,
-                                                      KernelType kernelType) {
+  static std::unique_ptr<KernelParametersBase> create(int batchSize, int numHeads, int seqLen, int headDim, KernelType kernelType) {
     switch (kernelType) {
     case KernelType::naive1D:
       return std::make_unique<NaiveParameters>(batchSize, numHeads,

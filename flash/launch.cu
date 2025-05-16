@@ -101,7 +101,7 @@ void unsupportedDimensions(dim3 tileDim, dim3 blockDim, KernelType kernel) {
   std::ostringstream err;
   err << "error : " << "Unsupported tile size: " << tileDim.x << ", "
       << tileDim.y << " and block size: " << blockDim.x << ", " << blockDim.y
-      << " for kernel type: " << static_cast<int>(kernel);
+      << " for kernel type: " << to_string(kernel);
   throw std::invalid_argument(err.str());
 }
 
@@ -112,6 +112,11 @@ struct KernelArgs {
  float softmax_scale;
  std::unique_ptr<KernelParametersBase> param;
 };
+
+template <typename F, typename T, T... Vs>
+constexpr void static_for(std::integer_sequence<T, Vs...>, F&& f) {
+  (f(std::integral_constant<T, Vs>{}), ...);
+}
 
 template <bool dynamicTileSize>
 void launchKernel(KernelArgs & args, auto &&kernel) {
@@ -148,7 +153,6 @@ void launchKernel(KernelArgs & args, auto &&kernel) {
         tileSize.x, tileSize.y, scale, args.l, args.m, args.O->data_ptr<float>());
   }
 }
-
 
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
                       KernelType kernelType) {
@@ -208,42 +212,33 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     launchKernel<true>(args, block_wmma_async);
     break;
   case KernelType::mma: {
-    constexpr auto rowsPerBlock = MMAParameters::rowsPerBlock();
-    constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
-    if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 96; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 72; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 56; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 48; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else
-      unsupportedDimensions(tileSize, blockDim, kernelType);
+    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 32, 48, 56, 72, 96, 112>{};
+    bool launched = false;
+    static_for(validRowsPerTileK, [&](auto rowsPerTileK) {
+      if (tileSize.x == rowsPerTileK) {
+        constexpr auto rowsPerTileQ = MMAParameters::rowsPerBlock();
+        constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
+        launchKernel<false>(args, kernel_mma<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
+        launched = true;
+      }
+    });
+    if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
+    break;
+
     break;
   }
   case KernelType::mma_swizzle: {
-    constexpr auto rowsPerBlock = MMAParameters::rowsPerBlock();
-    constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
-    std::cout << "Bc = " << tileSize.x << ", Br = " << tileSize.y << std::endl;
-    if (constexpr uint32_t colsPerTile = 112; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 96; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 72; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 56; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 48; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else if (constexpr uint32_t colsPerTile = 32; tileSize.x == colsPerTile)
-      launchKernel<false>(args, kernel_mma_swizzle<rowsPerBlock, colsPerTile, warpsPerBlock>);
-    else
-      unsupportedDimensions(tileSize, blockDim, kernelType);
+    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 32, 48, 56, 72, 96, 112>{};
+    bool launched = false;
+    static_for(validRowsPerTileK, [&](auto rowsPerTileK) {
+      if (tileSize.x == rowsPerTileK) {
+        constexpr auto rowsPerTileQ = MMAParameters::rowsPerBlock();
+        constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
+        launchKernel<false>(args, kernel_mma_swizzle<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
+        launched = true;
+      }
+    });
+    if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
     break;
   }
   case KernelType::mma_qreg: {
@@ -251,6 +246,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     constexpr auto Br = MMAQregParameters::rowsPerTileQ();
     constexpr auto Bc = MMAQregParameters::rowsPerTileK();
     auto tile = args.param->tileSize();
+    std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
+              << tileSize.y << " and block size: " << blockDim.x << ", " << blockDim.y
+              << " for kernel type: " << to_string(KernelType::mma_qreg) << std::endl;
+
     if (constexpr uint32_t maxHeadDim = 128; tile.z == maxHeadDim)
       launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
     else if (constexpr uint32_t maxHeadDim = 64; tile.z == maxHeadDim)
