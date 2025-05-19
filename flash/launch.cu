@@ -212,7 +212,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     launchKernel<true>(args, block_wmma_async);
     break;
   case KernelType::mma: {
-    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 32, 48, 56, 72, 96, 112>{};
+    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 16, 32, 48, 56, 72, 96, 112>{};
+    std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
+              << tileSize.y << " and block size: " << blockDim.x << ", " << blockDim.y
+              << " for kernel type: " << to_string(kernelType) << std::endl;
+
     bool launched = false;
     static_for(validRowsPerTileK, [&](auto rowsPerTileK) {
       if (tileSize.x == rowsPerTileK) {
@@ -228,7 +232,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   }
   case KernelType::mma_swizzle: {
-    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 32, 48, 56, 72, 96, 112>{};
+    constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 16, 32, 48, 56, 72, 96, 112>{};
     bool launched = false;
     static_for(validRowsPerTileK, [&](auto rowsPerTileK) {
       if (tileSize.x == rowsPerTileK) {
@@ -247,12 +251,17 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     constexpr auto Bc = MMAQregParameters::rowsPerTileK();
     auto tile = args.param->tileSize();
     std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
-              << tileSize.y << " and block size: " << blockDim.x << ", " << blockDim.y
-              << " for kernel type: " << to_string(KernelType::mma_qreg) << std::endl;
+              << tileSize.y  << " maxHeadDim = " << tileSize.z
+              << " and block size: " << blockDim.x << ", " << blockDim.y
+              << " for kernel type: " << to_string(kernelType) << std::endl;
 
     if (constexpr uint32_t maxHeadDim = 128; tile.z == maxHeadDim)
       launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
+    else if (constexpr uint32_t maxHeadDim = 72; tile.z == maxHeadDim)
+      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
     else if (constexpr uint32_t maxHeadDim = 64; tile.z == maxHeadDim)
+      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
+    else if (constexpr uint32_t maxHeadDim = 56; tile.z == maxHeadDim)
       launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
     else if (constexpr uint32_t maxHeadDim = 32; tile.z == maxHeadDim)
       launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);

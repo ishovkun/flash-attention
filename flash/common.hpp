@@ -15,6 +15,20 @@ inline float __device__ float_max(float a, float b) { return a > b ? a : b; }
 
 inline float __device__ float_add(float a, float b) { return a + b; }
 
+template <F32BinaryFunc auto binaryFunc>
+struct F32BinaryFuncTraits;
+
+template<>
+struct F32BinaryFuncTraits<float_max> {
+  // TODO: rename into sentinel
+  static constexpr float default_value = -INFINITY;
+};
+
+template<>
+struct F32BinaryFuncTraits<float_add> {
+  static constexpr float default_value = 0.f;
+};
+
 template <F32BinaryFunc auto binaryFunc = float_add>
 __device__ float warpReduce(float value) {
   constexpr int warpSize = 32;
@@ -57,7 +71,6 @@ inline __device__ uint32_t getUnskewCol(uint32_t row, uint32_t col,
   auto const offset = ((row % baseRow)*skew) % numCols;
   return (col + numCols - offset) % numCols;
 }
-
 
 inline __device__ uint32_t swap(uint32_t& x, uint32_t & y) {
   uint32_t temp = x;

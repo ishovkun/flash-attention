@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cuda.h>
 #include <cuda_runtime.h>
-// #include <iostream>
+#include <iostream>
 #include <mma.h>
 
 namespace flash {
@@ -34,7 +34,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   int numHeads = gridDim.y;
 
   int qkv_offset = (batch * numHeads + head) * seq_length * d;
-  int lm_offset = (batch * numHeads + head) * seq_length;
+  // int lm_offset = (batch * numHeads + head) * seq_length;
 
   // padded dimension d for wmma alignment
   uint32_t dp = maxHeadDim;
@@ -46,9 +46,9 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   // We load a Q tile into _Q, and then store Q tile in registers
   // then we load a K tile into _K (same location as Q, but maybe different size
   // Bc) and we load a V tile into _V
-  float *_Q = sram;               // size = Br * dp
-  float *_K = sram;               // size = Bc * dp
-  float *_V = &sram[dp * Bc];     // size = Bc x dp
+  float *_Q = sram;                        // size = Br * dp
+  float *_K = sram;                        // size = Bc * dp
+  float *_V = &sram[dp * Bc];              // size = Bc x dp
   float *_S = &sram[dp * max(2 * Bc, Br)]; // size = Br x Bc
 
   auto const tx = threadIdx.x;
@@ -70,12 +70,22 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   const auto subtileI = wy;
   auto const kStart = wx * common::warpSize + tx;
 
+  float mprev[2];
+  mprev[0] = -INFINITY;
+  mprev[1] = -INFINITY;
+  float lprev[2];
+  lprev[0] = 0.f;
+  lprev[1] = 0.f;
+
+  float mcur[2];
+  float lcur[2];
+
   // set l and m to default values
-  for (int i = iStart + warp * warpSize + tx; i < iEnd;
-       i += warpSize * numWarps) {
-    l[lm_offset + i] = 0.f;
-    m[lm_offset + i] = -INFINITY;
-  }
+  // for (int i = iStart + warp * warpSize + tx; i < iEnd; i += warpSize *
+  // numWarps) {
+  //   l[lm_offset + i] = 0.f;
+  //   m[lm_offset + i] = -INFINITY;
+  // }
 
   // Load Q tile
   auto iiStart = subtileI * mma::Tile::M;
@@ -99,11 +109,17 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     auto const k = subtileK * mma::Tile::K;
     mma::load_matrix_sync(q_frag[subtileK], _Q, iiStart, k, dp);
   }
-  __syncthreads(); // this should now be here cause warps only pull rows relevant to their subtiles
+  __syncthreads(); // this should now be here cause warps only pull rows
+                   // relevant to their subtiles
 
   for (int jStart = 0; jStart < seq_length; jStart += Bc) { // loop j tiles
     // Potentially cropped Bc in the last tile
     auto Bcc = min(Bc, seq_length - jStart);
+
+    mcur[0] = -INFINITY;
+    mcur[1] = -INFINITY;
+    lcur[0] = 0.f;
+    lcur[1] = 0.f;
 
     // load Kj, Vj
     for (int jj = warp; jj < Bc; jj += numWarps) {
@@ -120,6 +136,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     mma::FragmentB<mma::Layout::col_major> k_frag;
     mma::FragmentAccumulator s_frag;
 
+    // THIS is correct
     constexpr auto subtilesJPerWarp = common::ceil_div(numSubtilesJ, numWarpsX);
     for (auto subtileJ = wx * subtilesJPerWarp; subtileJ < (wx + 1) * subtilesJPerWarp; subtileJ++) {
       auto const ii = subtileI * mma::Tile::M;
@@ -131,54 +148,59 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         mma::load_matrix_sync(k_frag, _K, jj, k, dp);
         mma::mma_sync(s_frag, q_frag[subtileK], k_frag, s_frag);
       }
-      for (int t = 0; t < s_frag.size; t++)
+      for (int t = 0; t < s_frag.size; t++) {
         s_frag.reg[t] *= softmax_scale;
+      }
+
+      // Each accumulator really only stores values in 2 rows per thread
+      // we can store them locally instead of doing a separate reduction
+      // reduce row_max
+      // static_assert(numWarpsX == 1);
+      mma::threadReduceByRow<common::float_max>(s_frag, mcur, Bcc - jj);
       mma::store_matrix_sync(_S, ii, jj, Bc, s_frag);
     }
+    mma::warpSuperReduceByRow<common::float_max>(mcur);
+
+
+    // Compute row sum
+    for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
+      auto const frag_ii = subtileI * mma::Tile::M;
+      auto lane = threadIdx.x;
+
+      mma::load_matrix_sync(s_frag, _S, frag_ii, frag_jj, Bc);
+      for (int r = 0; r < s_frag.size; r++) {
+        auto group = lane >> 2;
+        uint32_t fragRow = (r < 2) ? group : group + 8; // 0 to 15
+        auto lane = threadIdx.x;
+        auto member = lane % 4;
+        auto ii = frag_ii + fragRow;
+        uint32_t fragCol = 2 * member + (r & 0x1);
+        auto jj = frag_jj + fragCol;
+        auto const row_m = (r < 2) ? mcur[0] : mcur[1];
+        auto Pij = __expf(s_frag.reg[r] - row_m);
+        Pij = (frag_ii < Brc && jj < Bcc) ? Pij : 0.f;
+        s_frag.reg[r] = Pij;
+      }
+      mma::threadReduceByRow<common::float_add>(s_frag, lcur, Bcc - frag_jj);
+      mma::store_matrix_sync(_S, frag_ii, frag_jj, Bc, s_frag);
+    }
+    // Compute row_sum: warp-reduce lcur by row
+    mma::warpSuperReduceByRow<common::float_add>(lcur);
 
     if constexpr (numWarpsX > 1) {
       __syncthreads();
     }
     __syncthreads();
 
-    constexpr uint32_t rowsPerWarp = mma::Tile::M / numWarpsX;
-    iiStart = (subtileI * mma::Tile::M) + wx * rowsPerWarp;
-    iiEnd = (subtileI * mma::Tile::M) + (wx + 1) * rowsPerWarp;
-    float mcur[rowsPerWarp];
-    float lcur[rowsPerWarp];
-    for (auto ii = iiStart; ii < iiEnd; ii++) {
-      float row_m = -INFINITY;
-      for (auto jj = tx; jj < Bcc; jj += warpSize) {
-        row_m = common::float_max(row_m, _S[Bc * ii + jj]);
-      }
-      row_m = common::warpReduce<common::float_max>(row_m);
-      mcur[ii - iiStart] = row_m;
-      float row_l = 0.f;
-      for (int jj = tx; jj < Bc; jj += blockDim.x) {
-        float Pij = __expf(_S[Bc * ii + jj] - row_m);
-        Pij = (ii < Brc && jj < Bcc) ? Pij : 0.f;
-        row_l += Pij;
-        _S[Bc * ii + jj] = Pij;
-      }
-      row_l = common::warpReduce<common::float_add>(row_l);
-      lcur[ii - iiStart] = row_l;
-    }
-    if constexpr (numWarpsX > 1) {
-      __syncthreads();
-    }
-    __syncthreads(); // not needed
-
     mma::FragmentA p_frag;
     mma::FragmentB<mma::Layout::row_major> v_frag;
     mma::FragmentAccumulator pv_frag;
 
     constexpr auto subtilesKPerWarp = numSubtilesK / numWarpsX;
-    iiStart = subtileI * mma::Tile::M;
-    auto iiEnd = min((subtileI + 1) * mma::Tile::M, Brc);
     for (auto subtileK = wx * subtilesKPerWarp; subtileK < (wx + 1) * subtilesKPerWarp; subtileK++) {
-      fill_fragment(pv_frag, 0.f);
       auto const frag_ii = subtileI * mma::Tile::M;
       auto const frag_k = subtileK * mma::Tile::N;
+      fill_fragment(pv_frag, 0.f);
       for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
         mma::load_matrix_sync(p_frag, _S, frag_ii, frag_jj, Bc);
         mma::load_matrix_sync(v_frag, _V, frag_jj, frag_k, dp);
@@ -191,22 +213,23 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         auto group = lane >> 2;
         auto member = lane % 4;
         uint32_t fragRow = (r < 2) ? group : group + 8; // 0 to 15
-        uint32_t fragCol = 2 * member + (r & 0x1); // 0 to 7
+        uint32_t fragCol = 2 * member + (r & 0x1);      // 0 to 7
         auto ii = frag_ii + fragRow;
         auto i = iStart + ii;
         auto k = frag_k + fragCol;
         auto PVik = pv_frag.reg[r];
+        auto thread_lm_row = (r < 2) ? 0 : 1;
 
         // mcur should be stored in _Q
-        auto const row_m = mcur[ii - iiStart];
-        auto const row_l = lcur[ii - iiStart];
+        auto const row_m = mcur[thread_lm_row];
+        auto const row_l = lcur[thread_lm_row];
+        auto const row_m_prev = mprev[thread_lm_row];
+        auto const row_l_prev = lprev[thread_lm_row];
+        float row_m_new = common::float_max(row_m_prev, row_m);
+        float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
+                          __expf(row_m - row_m_new) * row_l;
 
-        if (i < seq_length && k < d) {
-          float row_m_prev = m[lm_offset + i];
-          float row_l_prev = l[lm_offset + i];
-          float row_m_new = common::float_max(row_m_prev, row_m);
-          float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
-                            __expf(row_m - row_m_new) * row_l;
+        if (ii < Brc && k < d) {
           O[qkv_offset + i * d + k] =
               ((row_l_prev * __expf(row_m_prev - row_m_new) *
                 O[qkv_offset + i * d + k]) +
@@ -216,20 +239,16 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       }
     }
     // store new l and m!!!!
-    if (wx == 0 && tx == 0) {
-      for (int ii = iiStart; ii < iiEnd; ii++) {
-        auto i = iStart + ii;
-        float row_m_prev = m[lm_offset + i];
-        float row_l_prev = l[lm_offset + i];
-        auto const row_m = mcur[ii - iiStart];
-        auto const row_l = lcur[ii - iiStart];
-        float row_m_new = common::float_max(row_m_prev, row_m);
-        float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
-                          __expf(row_m - row_m_new) * row_l;
-        // store the new row_l and row_m
-        l[lm_offset + iStart + ii] = row_l_new;
-        m[lm_offset + iStart + ii] = row_m_new;
-      }
+    for (auto r = 0; r < 2; r++) {
+      auto const row_m = mcur[r];
+      auto const row_l = lcur[r];
+      auto const row_m_prev = mprev[r];
+      auto const row_l_prev = lprev[r];
+      float row_m_new = common::float_max(row_m_prev, row_m);
+      float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
+                        __expf(row_m - row_m_new) * row_l;
+      mprev[r] = row_m_new;
+      lprev[r] = row_l_new;
     }
 
     __syncthreads();

@@ -179,6 +179,7 @@ auto main(int argc, char *argv[]) -> int {
     time_kernel(q, k, v, flash::KernelType::wmma_row_block);
     time_kernel(q, k, v, flash::KernelType::mma);
     time_kernel(q, k, v, flash::KernelType::mma_swizzle);
+    time_kernel(q, k, v, flash::KernelType::mma_qreg);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
   }
 

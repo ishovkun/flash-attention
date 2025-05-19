@@ -1,8 +1,9 @@
 #pragma once
-#include <stdint.h>
 #include "common.hpp"
+#include <stdint.h>
 #include <stdio.h>
 #include <type_traits>
+#include "common.hpp"
 
 namespace flash::mma {
 
@@ -97,6 +98,24 @@ __device__ inline void load_matrix_sync(FragmentB<layout> &frag,
   }
 }
 
+template <U32ColumnIndexFunc auto returnColumnFunc = returnColumn>
+inline __device__ auto load_matrix_sync(FragmentAccumulator &frag, float const *ptr,
+                                        uint32_t fragFirstRow, uint32_t fragFirstCol,
+                                        uint32_t stride) {
+  auto lane = threadIdx.x;
+  auto group = lane >> 2;
+  auto member = lane % 4;
+  for (int i = 0; i < FragmentAccumulator::size; i++) {
+    uint32_t fragRow = (i < 2) ? group : group + 8;
+    uint32_t fragCol = 2 * member + (i & 0x1);
+    uint32_t row = fragFirstRow + fragRow;
+    uint32_t col = fragFirstCol + fragCol;
+    col = returnColumnFunc(row, col, stride);
+    frag.reg[i] = ptr[stride * row + col];
+  }
+}
+
+
 template <Layout layout>
 __device__ inline void mma_sync(FragmentAccumulator &D, FragmentA const &A,
                                 FragmentB<layout> const &B,
@@ -121,8 +140,8 @@ __device__ inline void store_matrix_sync(float *ptr, uint32_t fragFirstRow,
   /*
    groupID           = %laneid >> 2
    threadID_in_group = %laneid % 4
-   row =      groupID                            for c0 and c1
-   groupID + 8                          for c2 and c3
+   row =      groupID      for c0 and c1
+              groupID + 8  for c2 and c3
    col =  (threadID_in_group * 2) + (i & 0x1)    for ci   where i = {0,..,3}
   */
   auto lane = threadIdx.x;
@@ -139,5 +158,61 @@ __device__ inline void store_matrix_sync(float *ptr, uint32_t fragFirstRow,
     ptr[stride * row + col] = frag.reg[i];
   }
 }
+
+template <common::F32BinaryFunc auto binaryFunc>
+__device__ void threadReduceByRow(FragmentAccumulator const &frag, float (&ret)[2], uint32_t maxCol = Tile::N) {
+  auto lane = threadIdx.x;
+  // auto group = lane >> 2;
+  auto member = lane % 4;
+
+  for (uint32_t i = 0; i < FragmentAccumulator::size; i++) {
+    uint32_t fragCol = 2 * member + (i & 0x1);
+    uint32_t irow = (i < 2) ? 0 : 1;
+    auto value = (fragCol < maxCol) ? frag.reg[i] : common::F32BinaryFuncTraits<binaryFunc>::default_value;
+    ret[irow] = binaryFunc(value, ret[irow]);
+  }
+}
+
+// template <common::F32BinaryFunc auto binaryFunc>
+// __device__ void warpReduceByRow(FragmentAccumulator const &frag, float (&ret)[2], uint32_t maxCol = Tile::N) {
+//   auto lane = threadIdx.x;
+//   // auto group = lane >> 2;
+//   auto member = lane % 4;
+
+//   threadReduceByRow<binaryFunc>(frag, ret, maxCol);
+
+//   for (int s = 2; s > 0; s /= 2) {
+//     // TODO: send float2 instead of two instructions
+//     auto tmp1 = __shfl_down_sync(UINT32_MAX, ret[0], s);
+//     auto tmp2 = __shfl_down_sync(UINT32_MAX, ret[1], s);
+//     if (member < s) {
+//       ret[0] = binaryFunc(ret[0], tmp1);
+//       ret[1] = binaryFunc(ret[1], tmp2);
+//     }
+//   }
+//   // distribute to all threads
+//   // TODO: send float
+//   for (int i = 0; i < 2; i++) {
+//     // check this when I'm sober
+//     ret[i] = __shfl_sync(UINT32_MAX, ret[i], lane - lane % 4);
+//   }
+// }
+
+template <common::F32BinaryFunc auto binaryFunc>
+__device__ void warpSuperReduceByRow(float (&ret)[2]) {
+  auto lane = threadIdx.x;
+  for (int s = 2; s > 0; s /= 2) {
+    auto member = lane % 4;
+    auto tmp1 = __shfl_down_sync(UINT32_MAX, ret[0], s);
+    auto tmp2 = __shfl_down_sync(UINT32_MAX, ret[1], s);
+    if (member < s) {
+      ret[0] = binaryFunc(ret[0], tmp1);
+      ret[1] = binaryFunc(ret[1], tmp2);
+    }
+  }
+  ret[0] = __shfl_sync(UINT32_MAX, ret[0], lane - lane % 4);
+  ret[1] = __shfl_sync(UINT32_MAX, ret[1], lane - lane % 4);
+}
+
 
 } // namespace flash::mma
