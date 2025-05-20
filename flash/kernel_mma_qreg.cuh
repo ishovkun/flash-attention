@@ -62,6 +62,10 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
 
   const auto subtileI = warp;
 
+  constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
+  constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
+  constexpr auto unswizzleFuncA = common::getUnskewCol<mma::Tile::M/2, mma::Tile::M/2>;
+
   float mprev[mma::FragmentAccumulator::numRowsPerThread];
   float lprev[mma::FragmentAccumulator::numRowsPerThread];
   for (auto t = 0; t < mma::FragmentAccumulator::numRowsPerThread; t++) {
@@ -79,7 +83,8 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     auto i = iStart + ii;
     for (uint32_t k = tx; k < maxHeadDim; k += warpSize) {
       auto inBounds = k < d;
-      _Q[ii * dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
+      auto k_sw = swizzleFuncA(ii, k, dp);
+      _Q[ii * dp + k_sw] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
     }
   }
 
@@ -87,7 +92,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   mma::FragmentA q_frag[numSubtilesK];
   for (uint32_t subtileK = 0; subtileK < numSubtilesK; subtileK++) {
     auto const k = subtileK * mma::Tile::K;
-    mma::load_matrix_sync(q_frag[subtileK], _Q, iiStart, k, dp);
+    mma::load_matrix_sync<swizzleFuncA>(q_frag[subtileK], _Q, iiStart, k, dp);
   }
   __syncthreads(); // this should now be here cause warps only pull rows
                    // relevant to their subtiles
@@ -109,8 +114,9 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       auto j = jStart + jj;
       for (int k = tx; k < dp; k += blockDim.x) {
         auto inBounds = jj < Bcc && k < d;
-        _K[jj * dp + k] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
-        _V[jj * dp + k] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
+        auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
+        _K[jj * dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
+        _V[jj * dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
       }
     }
     __syncthreads();
@@ -128,7 +134,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       mma::fill_fragment(s_frag, 0.f);
       for (auto subtileK = 0; subtileK < numSubtilesK; subtileK++) {
         auto k = subtileK * mma::Tile::K;
-        mma::load_matrix_sync(k_frag, _K, jj, k, dp);
+        mma::load_matrix_sync<swizzleFuncB>(k_frag, _K, jj, k, dp);
         mma::mma_sync(s_frag, q_frag[subtileK], k_frag, s_frag);
       }
       for (int t = 0; t < s_frag.registersPerThread; t++) {
@@ -139,7 +145,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       // we can store them locally instead of doing a separate reduction
       // reduce row_max
       mma::threadReduceByRow<common::float_max>(s_frag, mcur, Bcc - jj);
-      mma::store_matrix_sync(_S, ii, jj, Bc, s_frag);
+      mma::store_matrix_sync<swizzleFuncA>(_S, ii, jj, Bc, s_frag);
     }
     mma::warpReduceFragAccumulatorRowValue<common::float_max>(mcur);
 
@@ -148,7 +154,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     // But we now can reuse K for shared memory sync
     for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
       auto const frag_ii = subtileI * mma::Tile::M;
-      mma::load_matrix_sync(s_frag, _S, frag_ii, frag_jj, Bc);
+      mma::load_matrix_sync<swizzleFuncA>(s_frag, _S, frag_ii, frag_jj, Bc);
       for (int r = 0; r < s_frag.registersPerThread; r++) {
         auto ii = frag_ii + s_frag.threadRow(r);
         auto jj = frag_jj + s_frag.threadCol(r);
@@ -158,7 +164,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         s_frag.reg[r] = Pij;
       }
       mma::threadReduceByRow<common::float_add>(s_frag, lcur, Bcc - frag_jj);
-      mma::store_matrix_sync(_S, frag_ii, frag_jj, Bc, s_frag);
+      mma::store_matrix_sync<swizzleFuncA>(_S, frag_ii, frag_jj, Bc, s_frag);
     }
     // Compute row_sum: warp-reduce lcur by row
     mma::warpReduceFragAccumulatorRowValue<common::float_add>(lcur);
@@ -172,8 +178,8 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       auto const frag_k = subtileK * mma::Tile::N;
       fill_fragment(pv_frag, 0.f);
       for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
-        mma::load_matrix_sync(p_frag, _S, frag_ii, frag_jj, Bc);
-        mma::load_matrix_sync(v_frag, _V, frag_jj, frag_k, dp);
+        mma::load_matrix_sync<swizzleFuncA>(p_frag, _S, frag_ii, frag_jj, Bc);
+        mma::load_matrix_sync<swizzleFuncB>(v_frag, _V, frag_jj, frag_k, dp);
         mma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
       }
       // now we have pv_frag and we can directly write output

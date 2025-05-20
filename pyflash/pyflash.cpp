@@ -45,6 +45,11 @@ static torch::Tensor forward_mma_swizzle(torch::Tensor Q, torch::Tensor K,
   return flash::forward(Q, K, V, flash::KernelType::mma_swizzle);
 }
 
+static torch::Tensor forward_mma_qreg(torch::Tensor Q, torch::Tensor K,
+                                      torch::Tensor V) {
+  return flash::forward(Q, K, V, flash::KernelType::mma_qreg);
+}
+
 
 TORCH_LIBRARY(pyflash, m) {
   m.def("naive(Tensor Q, Tensor K, Tensor V) -> Tensor",
@@ -65,4 +70,6 @@ TORCH_LIBRARY(pyflash, m) {
         torch::wrap_pybind_function(forward_mma));
   m.def("mma_swizzle(Tensor Q, Tensor K, Tensor V) -> Tensor",
         torch::wrap_pybind_function(forward_mma_swizzle));
+  m.def("mma_qreg(Tensor Q, Tensor K, Tensor V) -> Tensor",
+        torch::wrap_pybind_function(forward_mma_qreg));
 }

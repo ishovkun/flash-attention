@@ -53,6 +53,7 @@ block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
 block_wmma_async_result = pyflash.block_wmma_async(q, k, v)
 mma_result = pyflash.mma(q, k, v)
 mma_swizle_result = pyflash.mma_swizzle(q, k, v)
+mma_qreg_result = pyflash.mma_qreg(q, k, v)
 
 def profile_kernel(kernel, q, k, v, gpu_time_only):
     with profiler.profile(use_device='cuda') as prof:
@@ -73,3 +74,4 @@ profile_kernel(pyflash.block_wmma_async, q, k, v, gpu_time_only=profiler_print_c
 profile_kernel(pyflash.block_wmma_row_block, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.mma, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.mma_swizzle, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(pyflash.mma_qreg, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
