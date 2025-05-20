@@ -11,10 +11,10 @@
 
 namespace flash {
 
-__global__ void naive_forward_kernel(const float *Q, const float *K,
-                                     const float *V, const int N, const int d,
-                                     const int Bc, const int Br,
-                                     const float softmax_scale, float *l,
+__global__ void naive_forward_kernel(float const *Q, float const *K,
+                                     float const *V, int N, int d,
+                                     const int Bc, int Br,
+                                     float softmax_scale, float *l,
                                      float *m, float *O);
 
 __global__ void forward_kernel_2d(float const *__restrict__ Q,
@@ -30,6 +30,7 @@ forward_kernel_2d_row_tile(float const *__restrict__ Q,
                            float const *__restrict__ V, int N, int d, int Bc,
                            int Br, float softmax_scale, float *__restrict__ l,
                            float *__restrict__ m, float *__restrict__ O);
+
 
 __global__ void warp_wmma(const float *Q, const float *K, const float *V,
                                const int N, const int d, const int Bc,
@@ -57,23 +58,6 @@ __global__ void block_wmma_async(float const *__restrict__ Q,
                                  float *__restrict__ l, float *__restrict__ m,
                                  float *__restrict__ O);
 
-// static void checkRequestedSharedMemory(int requested_shared_memory) {
-//   int max_sram_size;
-//   cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock,
-//   0); if (requested_shared_memory > max_sram_size) {
-//     std::cerr << "Warning: Requested shared memory " <<
-//     requested_shared_memory
-//               << " exceeds the default maximum " << max_sram_size <<
-//               std::endl;
-//     // std::cout << "Trying to bump up the maximum: " << std::endl;
-//     // std::cerr << "Requested shared memory " << requested_shared_memory
-//     //           << " exceeds maximum allowed (" << max_sram_size << ")"
-//     //           << std::endl;
-//     throw std::runtime_error("Requested shared memory exceeds maximum
-//     allowed");
-//   }
-// }
-
 #define gpuErrchk(ans)                                                         \
   {                                                                            \
     gpuAssert((ans), __FILE__, __LINE__);                                      \
@@ -90,13 +74,6 @@ static inline void gpuAssert(cudaError_t code, const char *file, int line,
   }
 }
 
-// #define UNSUPPORTED_DIMENSIONS(msg)                                            \
-//   {                                                                            \
-//     std::ostringstream err;                                                    \
-//     err << __FILE__ << "(" << __LINE__ << ") "                                 \
-//         << "error : " << msg;                                                  \
-//     throw std::invalid_argument(err.str());                                    \
-//   }
 void unsupportedDimensions(dim3 tileDim, dim3 blockDim, KernelType kernel) {
   std::ostringstream err;
   err << "error : " << "Unsupported tile size: " << tileDim.x << ", "
@@ -104,6 +81,29 @@ void unsupportedDimensions(dim3 tileDim, dim3 blockDim, KernelType kernel) {
       << " for kernel type: " << to_string(kernel);
   throw std::invalid_argument(err.str());
 }
+
+using DynamicTileSizeKernelSignature = void (*) (
+  float const*, float const*, float const*,
+  int, int, int, int, float,
+  float*, float*, float*);
+
+using StaticTileSizeKernelWithLMSignature = void (*) (
+  float const*, float const*, float const*,
+  int, int, float,
+  float*, float*, float*);
+
+using StaticTileSizeKernelSignature = void (*) (
+  float const*, float const*, float const*,
+  int, int, float, float*);
+
+template <typename F>
+concept DynamicTileSizeKernel = std::is_convertible_v<F, DynamicTileSizeKernelSignature>;
+
+template <typename F>
+concept StaticTileSizeKernelGlobalLM = std::is_convertible_v<F, StaticTileSizeKernelWithLMSignature>;
+
+template <typename F>
+concept StaticTileSizeKernelLocalLM = std::is_convertible_v<F, StaticTileSizeKernelSignature>;
 
 struct KernelArgs {
  torch::Tensor const *Q, *K, *V;
@@ -118,7 +118,6 @@ constexpr void static_for(std::integer_sequence<T, Vs...>, F&& f) {
   (f(std::integral_constant<T, Vs>{}), ...);
 }
 
-template <bool dynamicTileSize>
 void launchKernel(KernelArgs & args, auto &&kernel) {
   const int N = args.Q->size(2); // sequence length
   const int d = args.Q->size(3); // head dimension
@@ -142,15 +141,24 @@ void launchKernel(KernelArgs & args, auto &&kernel) {
   auto const scale = args.softmax_scale;
   auto gridDim = args.param->gridDim();
   auto blockDim = args.param->blockDim();
-  if constexpr (!dynamicTileSize)
+  if constexpr (DynamicTileSizeKernel<decltype(&kernel)>) {
+    auto tileSize = args.param->tileSize();
+    kernel<<<args.param->gridDim(), args.param->blockDim(), args.param->sramSize()>>>(
+          args.Q->data_ptr<float>(), args.K->data_ptr<float>(), args.V->data_ptr<float>(), N, d,
+          tileSize.x, tileSize.y, scale, args.l, args.m, args.O->data_ptr<float>());
+  }
+  else if constexpr (StaticTileSizeKernelGlobalLM<decltype(kernel)>) {
     kernel<<<gridDim, blockDim, args.param->sramSize()>>>(
         args.Q->data_ptr<float>(), args.K->data_ptr<float>(), args.V->data_ptr<float>(), N, d,
         scale, args.l, args.m, args.O->data_ptr<float>());
-  else {
-    auto tileSize = args.param->tileSize();
-    kernel<<<args.param->gridDim(), args.param->blockDim(), args.param->sramSize()>>>(
+  }
+  else if constexpr (StaticTileSizeKernelLocalLM<decltype(kernel)>) {
+    kernel<<<gridDim, blockDim, args.param->sramSize()>>>(
         args.Q->data_ptr<float>(), args.K->data_ptr<float>(), args.V->data_ptr<float>(), N, d,
-        tileSize.x, tileSize.y, scale, args.l, args.m, args.O->data_ptr<float>());
+        scale, args.O->data_ptr<float>());
+  }
+  else {
+    static_assert([] { return false; }(), "Unsupported kernel signature :-(");
   }
 }
 
@@ -188,28 +196,30 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   // << std::endl; std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y
   // << ", " << gridDim.z << std::endl;
 
+  static_assert(DynamicTileSizeKernel<decltype(&naive_forward_kernel)> && "baaaaad");
+
   // launch kernel
   switch (kernelType) {
   case KernelType::naive1D:
-    launchKernel<true>(args, naive_forward_kernel);
+    launchKernel(args, naive_forward_kernel);
     break;
   case KernelType::scalar2D:
-    launchKernel<true>(args, forward_kernel_2d);
+    launchKernel(args, forward_kernel_2d);
     break;
   case KernelType::scalar2D_row_tile:
-    launchKernel<true>(args, forward_kernel_2d_row_tile);
+    launchKernel(args, forward_kernel_2d_row_tile);
     break;
   case KernelType::warp_wmma:
-    launchKernel<true>(args, warp_wmma);
+    launchKernel(args, warp_wmma);
     break;
   case KernelType::block_wmma:
-    launchKernel<true>(args, block_wmma);
+    launchKernel(args, block_wmma);
     break;
   case KernelType::wmma_row_block:
-    launchKernel<true>(args, wmma_rowblock);
+    launchKernel(args, wmma_rowblock);
     break;
   case KernelType::block_wmma_async:
-    launchKernel<true>(args, block_wmma_async);
+    launchKernel(args, block_wmma_async);
     break;
   case KernelType::mma: {
     constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 16, 32, 48, 56, 72, 96, 112>{};
@@ -222,13 +232,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
       if (tileSize.x == rowsPerTileK) {
         constexpr auto rowsPerTileQ = MMAParameters::rowsPerBlock();
         constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
-        launchKernel<false>(args, kernel_mma<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
+        launchKernel(args, kernel_mma<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
         launched = true;
       }
     });
     if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
-    break;
-
     break;
   }
   case KernelType::mma_swizzle: {
@@ -238,7 +246,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
       if (tileSize.x == rowsPerTileK) {
         constexpr auto rowsPerTileQ = MMAParameters::rowsPerBlock();
         constexpr auto warpsPerBlock = MMAParameters::warpsPerBlock();
-        launchKernel<false>(args, kernel_mma_swizzle<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
+        launchKernel(args, kernel_mma_swizzle<rowsPerTileQ, rowsPerTileK, warpsPerBlock>);
         launched = true;
       }
     });
@@ -246,9 +254,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   }
   case KernelType::mma_qreg: {
-    constexpr auto nw = MMAQregParameters::warpsPerBlock();
     constexpr auto Br = MMAQregParameters::rowsPerTileQ();
     constexpr auto Bc = MMAQregParameters::rowsPerTileK();
+    if (d % 2 != 0) {
+      throw std::invalid_argument("Head dim must be even for kernel" + to_string(kernelType));
+    }
     auto tile = args.param->tileSize();
     std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
               << tileSize.y  << " maxHeadDim = " << tileSize.z
@@ -256,15 +266,13 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
               << " for kernel type: " << to_string(kernelType) << std::endl;
 
     if (constexpr uint32_t maxHeadDim = 128; tile.z == maxHeadDim)
-      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
-    else if (constexpr uint32_t maxHeadDim = 72; tile.z == maxHeadDim)
-      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
+      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
+    else if (constexpr uint32_t maxHeadDim = 96; tile.z == maxHeadDim)
+      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
     else if (constexpr uint32_t maxHeadDim = 64; tile.z == maxHeadDim)
-      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
-    else if (constexpr uint32_t maxHeadDim = 56; tile.z == maxHeadDim)
-      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
+      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
     else if (constexpr uint32_t maxHeadDim = 32; tile.z == maxHeadDim)
-      launchKernel<false>(args, kernel_mma_qreg<Br, Bc, nw, maxHeadDim>);
+      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
     else
       unsupportedDimensions(tileSize, blockDim, kernelType);
     break;

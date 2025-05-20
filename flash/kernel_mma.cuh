@@ -12,14 +12,14 @@ namespace flash {
 template <uint32_t Br, uint32_t Bc, uint32_t numWarps>
 __global__ void
 kernel_mma(float const *__restrict__ Q, // query vector
-                float const *__restrict__ K, // key vector
-                float const *__restrict__ V, // value vector
-                int seq_length,              // sequence length
-                int d,                       // head_dim
-                float softmax_scale,         // 1/sqrt(d)
-                float *__restrict__ l,       // storage temp for row \sum exp(S)
-                float *__restrict__ m,       // storage temp for row \max S
-                float *__restrict__ O)       // output attention
+           float const *__restrict__ K, // key vector
+           float const *__restrict__ V, // value vector
+           int seq_length,              // sequence length
+           int d,                       // head_dim
+           float softmax_scale,         // 1/sqrt(d)
+           float *__restrict__ l,       // storage temp for row \sum exp(S)
+           float *__restrict__ m,       // storage temp for row \max S
+           float *__restrict__ O)       // output attention
 {
   int batch = blockIdx.x;
   int head = blockIdx.y;

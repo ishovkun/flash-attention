@@ -13,7 +13,7 @@ namespace flash {
 /*
  * In this version, Q is distributed between the registers
  */
-template <uint32_t Br, uint32_t Bc, uint32_t numWarps, uint32_t maxHeadDim>
+template <uint32_t Br, uint32_t Bc, uint32_t maxHeadDim>
 __global__ void
 kernel_mma_qreg(float const *__restrict__ Q, // query vector
                 float const *__restrict__ K, // key vector
@@ -21,13 +21,11 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
                 int seq_length,              // sequence length
                 int d,                       // head_dim
                 float softmax_scale,         // 1/sqrt(d)
-                float *__restrict__ l,       // storage temp for row \sum exp(S)
-                float *__restrict__ m,       // storage temp for row \max S
                 float *__restrict__ O)       // output attention
 {
-  static_assert(numWarps * mma::Tile::M >= Br);
-  static_assert((numWarps * mma::Tile::M) % Br == 0,
-                "Each subtile has the same number of warps");
+  constexpr uint32_t numWarps = Br / mma::Tile::M;
+  assert(d % 2 == 0 && "head_dim must be even for aligned vectorized stores");
+  assert(blockDim.y == numWarps);
 
   int batch = blockIdx.x;
   int head = blockIdx.y;
@@ -62,45 +60,28 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   constexpr auto numSubtilesK = common::ceil_div(maxHeadDim, mma::Tile::K);
   constexpr auto numSubtilesJ = common::ceil_div(Bc, mma::Tile::N);
 
-  auto const wy = warp % numSubtilesI;
-  auto const wx = warp / numSubtilesI;
-  constexpr auto numWarpsX = numWarps / numSubtilesI;
+  const auto subtileI = warp;
 
-  const auto subtileI = wy;
-  auto const kStart = wx * common::warpSize + tx;
-
-  float mprev[2];
-  mprev[0] = -INFINITY;
-  mprev[1] = -INFINITY;
-  float lprev[2];
-  lprev[0] = 0.f;
-  lprev[1] = 0.f;
+  float mprev[mma::FragmentAccumulator::numRowsPerThread];
+  float lprev[mma::FragmentAccumulator::numRowsPerThread];
+  for (auto t = 0; t < mma::FragmentAccumulator::numRowsPerThread; t++) {
+    mprev[t] = -INFINITY;
+    lprev[t] = 0.f;
+  }
 
   float mcur[2];
   float lcur[2];
-
-  // set l and m to default values
-  // for (int i = iStart + warp * warpSize + tx; i < iEnd; i += warpSize *
-  // numWarps) {
-  //   l[lm_offset + i] = 0.f;
-  //   m[lm_offset + i] = -INFINITY;
-  // }
 
   // Load Q tile
   auto iiStart = subtileI * mma::Tile::M;
   auto iiEnd = min((subtileI + 1) * mma::Tile::M, Brc);
   for (uint32_t ii = iiStart; ii < iiEnd; ii++) {
     auto i = iStart + ii;
-    for (uint32_t k = kStart; k < maxHeadDim; k += numWarpsX * warpSize) {
+    for (uint32_t k = tx; k < maxHeadDim; k += warpSize) {
       auto inBounds = k < d;
       _Q[ii * dp + k] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
     }
   }
-
-  if constexpr (numWarpsX > 1) {
-    __syncthreads();
-  }
-  __syncthreads();
 
   // Load full Q into registers of every warp
   mma::FragmentA q_frag[numSubtilesK];
@@ -110,17 +91,20 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   }
   __syncthreads(); // this should now be here cause warps only pull rows
                    // relevant to their subtiles
+                   // It would be this way if K and V did not overlap with Q
 
   for (int jStart = 0; jStart < seq_length; jStart += Bc) { // loop j tiles
     // Potentially cropped Bc in the last tile
     auto Bcc = min(Bc, seq_length - jStart);
 
-    mcur[0] = -INFINITY;
-    mcur[1] = -INFINITY;
-    lcur[0] = 0.f;
-    lcur[1] = 0.f;
+    for (auto t = 0; t < mma::FragmentAccumulator::numRowsPerThread; t++) {
+      mcur[t] = -INFINITY;
+      lcur[t] = 0.f;
+    }
 
     // load Kj, Vj
+    // Idea: first load K, then sync, then load Vj
+    // this way we can aboid a sync at the end of the loop
     for (int jj = warp; jj < Bc; jj += numWarps) {
       auto j = jStart + jj;
       for (int k = tx; k < dp; k += blockDim.x) {
@@ -131,13 +115,13 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     }
     __syncthreads();
 
-    // Compute Sij
+    // Compute Sij = Qij * Kj
     mma::FragmentB<mma::Layout::col_major> k_frag;
     mma::FragmentAccumulator s_frag;
 
-    // THIS is correct
-    constexpr auto subtilesJPerWarp = common::ceil_div(numSubtilesJ, numWarpsX);
-    for (auto subtileJ = wx * subtilesJPerWarp; subtileJ < (wx + 1) * subtilesJPerWarp; subtileJ++) {
+    // Each warp will compute a portion of j subtiles
+    // for now, I assume only one warp does it though since no reduction
+    for (auto subtileJ = 0; subtileJ < numSubtilesJ; subtileJ++) {
       auto const ii = subtileI * mma::Tile::M;
       auto const jj = subtileJ * mma::Tile::N;
 
@@ -154,21 +138,21 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       // Each accumulator really only stores values in 2 rows per thread
       // we can store them locally instead of doing a separate reduction
       // reduce row_max
-      // static_assert(numWarpsX == 1);
       mma::threadReduceByRow<common::float_max>(s_frag, mcur, Bcc - jj);
       mma::store_matrix_sync(_S, ii, jj, Bc, s_frag);
     }
-    mma::warpSuperReduceByRow<common::float_max>(mcur);
-
+    mma::warpReduceFragAccumulatorRowValue<common::float_max>(mcur);
 
     // Compute row sum
+    // Here I assume again one warp X
+    // But we now can reuse K for shared memory sync
     for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
       auto const frag_ii = subtileI * mma::Tile::M;
       mma::load_matrix_sync(s_frag, _S, frag_ii, frag_jj, Bc);
       for (int r = 0; r < s_frag.registersPerThread; r++) {
         auto ii = frag_ii + s_frag.threadRow(r);
         auto jj = frag_jj + s_frag.threadCol(r);
-        auto const row_m = (r < 2) ? mcur[0] : mcur[1];
+        auto const row_m = mcur[s_frag.rowIndex(r)];
         auto Pij = __expf(s_frag.reg[r] - row_m);
         Pij = (frag_ii < Brc && jj < Bcc) ? Pij : 0.f;
         s_frag.reg[r] = Pij;
@@ -177,19 +161,13 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       mma::store_matrix_sync(_S, frag_ii, frag_jj, Bc, s_frag);
     }
     // Compute row_sum: warp-reduce lcur by row
-    mma::warpSuperReduceByRow<common::float_add>(lcur);
-
-    if constexpr (numWarpsX > 1) {
-      __syncthreads();
-    }
-    __syncthreads();
+    mma::warpReduceFragAccumulatorRowValue<common::float_add>(lcur);
 
     mma::FragmentA p_frag;
     mma::FragmentB<mma::Layout::row_major> v_frag;
     mma::FragmentAccumulator pv_frag;
 
-    constexpr auto subtilesKPerWarp = numSubtilesK / numWarpsX;
-    for (auto subtileK = wx * subtilesKPerWarp; subtileK < (wx + 1) * subtilesKPerWarp; subtileK++) {
+    for (auto subtileK = 0; subtileK < numSubtilesK; subtileK++) {
       auto const frag_ii = subtileI * mma::Tile::M;
       auto const frag_k = subtileK * mma::Tile::N;
       fill_fragment(pv_frag, 0.f);
@@ -199,36 +177,55 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         mma::mma_sync(pv_frag, p_frag, v_frag, pv_frag);
       }
       // now we have pv_frag and we can directly write output
-      // float rO[pv_frag.size];
-      for (auto r = 0; r < pv_frag.registersPerThread; r++) {
+      // This should be optimal because a row of fragment C is:
+      // 0 0 1 1 2 2 3 3 (8x4 = 32 bytes == size of a sector)
+      float rO[pv_frag.registersPerThread];
+      for (auto r = 0; r < pv_frag.registersPerThread; r += 2) {
         auto fragRow = mma::FragmentAccumulator::threadRow(r);
         auto fragCol = mma::FragmentAccumulator::threadCol(r);
         auto ii = frag_ii + fragRow;
         auto i = iStart + ii;
         auto k = frag_k + fragCol;
+        if (ii < Brc && k < d) {
+          auto const *src = reinterpret_cast<float2 const*>(&O[qkv_offset + i * d + k]);
+          auto *dst = reinterpret_cast<float2*>(&rO[r]);
+          *dst = *src;
+        }
+      }
+      for (auto r = 0; r < pv_frag.registersPerThread; r++) {
         auto PVik = pv_frag.reg[r];
-        auto thread_lm_row = (r < 2) ? 0 : 1;
-
-        // mcur should be stored in _Q
+        auto thread_lm_row = pv_frag.rowIndex(r);
         auto const row_m = mcur[thread_lm_row];
         auto const row_l = lcur[thread_lm_row];
         auto const row_m_prev = mprev[thread_lm_row];
         auto const row_l_prev = lprev[thread_lm_row];
-        float row_m_new = common::float_max(row_m_prev, row_m);
-        float row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
-                          __expf(row_m - row_m_new) * row_l;
-
-        if (ii < Brc && k < d) {
-          O[qkv_offset + i * d + k] =
-              ((row_l_prev * __expf(row_m_prev - row_m_new) *
-                O[qkv_offset + i * d + k]) +
-               (__expf(row_m - row_m_new) * PVik)) /
+        auto const row_m_new = common::float_max(row_m_prev, row_m);
+        auto const row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
+                               __expf(row_m - row_m_new) * row_l;
+        rO[r] = ((row_l_prev * __expf(row_m_prev - row_m_new) * rO[r]) +
+              (__expf(row_m - row_m_new) * PVik)) /
               row_l_new;
+      }
+      for (auto r = 0; r < pv_frag.registersPerThread; r += 2) {
+        auto fragRow = mma::FragmentAccumulator::threadRow(r);
+        auto fragCol = mma::FragmentAccumulator::threadCol(r);
+        auto ii = frag_ii + fragRow;
+        auto i = iStart + ii;
+        auto k = frag_k + fragCol;
+        if (ii < Brc) {
+          if (k + 1 < d) {
+            auto *dst = reinterpret_cast<float2*>(&O[qkv_offset + i * d + k]);
+            auto const *src = reinterpret_cast<float2*>(&rO[r]);
+            *dst = *src;
+          }
+          else if (k < d) {
+           O[qkv_offset + i * d + k] = rO[r];
+          }
         }
       }
     }
     // store new l and m!!!!
-    for (auto r = 0; r < 2; r++) {
+    for (auto r = 0; r < mma::FragmentAccumulator::numRowsPerThread; r++) {
       auto const row_m = mcur[r];
       auto const row_l = lcur[r];
       auto const row_m_prev = mprev[r];

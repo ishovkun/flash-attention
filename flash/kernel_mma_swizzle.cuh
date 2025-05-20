@@ -34,9 +34,6 @@ __global__ void kernel_mma_swizzle(
   // bug is here
   constexpr auto rowsPerWarp = common::ceil_div(Br, numWarps);
   float mcur[rowsPerWarp];
-  // float attention[rowsPerWarp];
-  // for (int ii = 0; ii < rowsPerWarp; ii++)
-  //   attention[i] = 0.f;
 
   // shared memory for tiles
   extern __shared__ float sram[];

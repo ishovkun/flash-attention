@@ -320,7 +320,6 @@ public:
 
   dim3 blockDim() {
     auto ts = tileSize();
-    // auto nWarps = max(ts.x, ts.y);
     auto nWarps = 6;
     nWarps = min(nWarps, maxWarpsPerBlock);
     return dim3(common::warpSize, nWarps);
@@ -334,7 +333,7 @@ class MMAQregParameters : public KernelParametersBase {
  public:
   MMAQregParameters(int batchSize, int numHeads, int seqLen, int headDim)
     : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
-      headDim(common::nextMultiple(headDim, mma::Tile::N))
+      headDim(common::nextMultiple(headDim, 32))
   {}
 
   static constexpr uint32_t warpsPerBlock() { return rowsPerTileQ() / mma::Tile::M; }
@@ -359,17 +358,14 @@ public:
   static std::unique_ptr<KernelParametersBase> create(int batchSize, int numHeads, int seqLen, int headDim, KernelType kernelType) {
     switch (kernelType) {
     case KernelType::naive1D:
-      return std::make_unique<NaiveParameters>(batchSize, numHeads,
-                                                     seqLen, headDim);
+      return std::make_unique<NaiveParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::scalar2D:
-      return std::make_unique<Scalar2DParameters>(batchSize, numHeads,
-                                                        seqLen, headDim);
+      return std::make_unique<Scalar2DParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::scalar2D_row_tile:
       return std::make_unique<Scalar2DRowTileParameters>(
           batchSize, numHeads, seqLen, headDim);
     case KernelType::warp_wmma:
-      return std::make_unique<WarpWMMAParameters>(batchSize, numHeads,
-                                                            seqLen, headDim);
+      return std::make_unique<WarpWMMAParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::block_wmma:
       return std::make_unique<BlockWMMAParameters>(
           batchSize, numHeads, seqLen, headDim);
