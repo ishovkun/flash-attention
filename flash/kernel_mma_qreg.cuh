@@ -34,7 +34,6 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   int numHeads = gridDim.y;
 
   int qkv_offset = (batch * numHeads + head) * seq_length * d;
-  // int lm_offset = (batch * numHeads + head) * seq_length;
 
   // padded dimension d for wmma alignment
   uint32_t dp = maxHeadDim;
@@ -148,7 +147,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         mma::load_matrix_sync(k_frag, _K, jj, k, dp);
         mma::mma_sync(s_frag, q_frag[subtileK], k_frag, s_frag);
       }
-      for (int t = 0; t < s_frag.size; t++) {
+      for (int t = 0; t < s_frag.registersPerThread; t++) {
         s_frag.reg[t] *= softmax_scale;
       }
 
@@ -165,17 +164,10 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     // Compute row sum
     for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
       auto const frag_ii = subtileI * mma::Tile::M;
-      auto lane = threadIdx.x;
-
       mma::load_matrix_sync(s_frag, _S, frag_ii, frag_jj, Bc);
-      for (int r = 0; r < s_frag.size; r++) {
-        auto group = lane >> 2;
-        uint32_t fragRow = (r < 2) ? group : group + 8; // 0 to 15
-        auto lane = threadIdx.x;
-        auto member = lane % 4;
-        auto ii = frag_ii + fragRow;
-        uint32_t fragCol = 2 * member + (r & 0x1);
-        auto jj = frag_jj + fragCol;
+      for (int r = 0; r < s_frag.registersPerThread; r++) {
+        auto ii = frag_ii + s_frag.threadRow(r);
+        auto jj = frag_jj + s_frag.threadCol(r);
         auto const row_m = (r < 2) ? mcur[0] : mcur[1];
         auto Pij = __expf(s_frag.reg[r] - row_m);
         Pij = (frag_ii < Brc && jj < Bcc) ? Pij : 0.f;
@@ -208,12 +200,9 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       }
       // now we have pv_frag and we can directly write output
       // float rO[pv_frag.size];
-      for (auto r = 0; r < pv_frag.size; r++) {
-        auto lane = tx;
-        auto group = lane >> 2;
-        auto member = lane % 4;
-        uint32_t fragRow = (r < 2) ? group : group + 8; // 0 to 15
-        uint32_t fragCol = 2 * member + (r & 0x1);      // 0 to 7
+      for (auto r = 0; r < pv_frag.registersPerThread; r++) {
+        auto fragRow = mma::FragmentAccumulator::threadRow(r);
+        auto fragCol = mma::FragmentAccumulator::threadCol(r);
         auto ii = frag_ii + fragRow;
         auto i = iStart + ii;
         auto k = frag_k + fragCol;

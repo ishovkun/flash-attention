@@ -106,7 +106,7 @@ kernel_mma(float const *__restrict__ Q, // query vector
         mma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
       // apply scaling
-      for (int t = 0; t < s_frag.size; t++)
+      for (int t = 0; t < s_frag.registersPerThread; t++)
         s_frag.reg[t] *= softmax_scale;
       mma::store_matrix_sync(_S, ii, jj, Bc, s_frag);
     }

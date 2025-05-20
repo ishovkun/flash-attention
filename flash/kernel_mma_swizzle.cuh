@@ -113,7 +113,7 @@ __global__ void kernel_mma_swizzle(
         mma::mma_sync(s_frag, q_frag, k_frag, s_frag);
       }
       // apply scaling
-      for (int t = 0; t < s_frag.size; t++)
+      for (int t = 0; t < s_frag.registersPerThread; t++)
         s_frag.reg[t] *= softmax_scale;
       mma::store_matrix_sync<swizzleFuncA>(_S, ii, jj, Bc, s_frag);
     }

@@ -21,12 +21,12 @@ struct F32BinaryFuncTraits;
 template<>
 struct F32BinaryFuncTraits<float_max> {
   // TODO: rename into sentinel
-  static constexpr float default_value = -INFINITY;
+  static constexpr float sentinel = -INFINITY;
 };
 
 template<>
 struct F32BinaryFuncTraits<float_add> {
-  static constexpr float default_value = 0.f;
+  static constexpr float sentinel = 0.f;
 };
 
 template <F32BinaryFunc auto binaryFunc = float_add>
