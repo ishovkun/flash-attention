@@ -64,7 +64,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
 
   constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
   constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
-  constexpr auto unswizzleFuncA = common::getUnskewCol<mma::Tile::M/2, mma::Tile::M/2>;
+  // constexpr auto unswizzleFuncA = common::getUnskewCol<mma::Tile::M/2, mma::Tile::M/2>;
 
   float mprev[mma::FragmentAccumulator::numRowsPerThread];
   float lprev[mma::FragmentAccumulator::numRowsPerThread];

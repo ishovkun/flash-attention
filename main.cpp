@@ -9,11 +9,16 @@ struct AttentionParameters {
   int head_embd;
 };
 
-auto manual_attn(auto q, auto k, auto v) {
+torch::Tensor manual_attn(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
   auto att = (q.matmul(k.transpose(-2, -1)) * (1.0 / sqrt(k.size(-1))));
   att = torch::nn::functional::softmax(att, -1);
   auto y = att.matmul(v);
   return y;
+}
+
+torch::Tensor torch_attn2(torch::Tensor q, torch::Tensor k, torch::Tensor v) {
+  // return torch::nn::functional::scaled_dot_product_attention(q, k, v);
+  return torch::scaled_dot_product_attention(q, k, v);
 }
 
 auto generate_data(auto const &p) {
@@ -118,15 +123,24 @@ void test_alg(AttentionParameters const &params) {
   }
 }
 
-auto time_kernel(auto const & q, auto const & k, auto const & v,
-                 flash::KernelType kernelType) {
+template <typename KernelType>
+auto time_kernel(torch::Tensor const & q, torch::Tensor const & k, torch::Tensor const & v,
+                 std::string const & kernel_name, KernelType && kernel)
+{
   using namespace std::chrono;
   auto const start_time = high_resolution_clock::now();
-  flash::forward(q, k, v, kernelType);
+  kernel(q,k,v);
   auto const end_time = high_resolution_clock::now();
   auto const duration = (duration_cast<milliseconds>(end_time - start_time)).count();
-  std::cout << "Benchmark \'" << to_string(kernelType) << "\'"
-            << " took " << (double)duration << " [ms]" << std::endl;
+  std::cout << "Benchmark \'" << kernel_name << "\'"
+            << " took " << (double)duration << " [ms]" << std::endl;}
+
+auto time_kernel(torch::Tensor  const & q, torch::Tensor  const & k, torch::Tensor  const & v,
+                 flash::KernelType kernelType) {
+  auto func = [kernelType](auto const &q, auto const &k, auto const &v) {
+    return flash::forward(q, k, v, kernelType);
+  };
+  time_kernel(q, k, v, to_string(kernelType), func);
 }
 
 auto main(int argc, char *argv[]) -> int {
@@ -195,6 +209,9 @@ auto main(int argc, char *argv[]) -> int {
     time_kernel(q, k, v, flash::KernelType::mma_swizzle);
     time_kernel(q, k, v, flash::KernelType::mma_qreg);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
+
+    time_kernel(q, k, v, "manual attention", manual_attn);
+    time_kernel(q, k, v, "torch attention v2", torch_attn2);
   }
 
   return EXIT_SUCCESS;

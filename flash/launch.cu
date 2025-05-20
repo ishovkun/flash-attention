@@ -175,8 +175,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   auto O = torch::zeros_like(Q);
 
   float *l, *m;
-  cudaMalloc(&l, B * nh * N * sizeof(float));
-  cudaMalloc(&m, B * nh * N * sizeof(float));
+  if (kernelType != KernelType::mma_qreg) {
+    cudaMalloc(&l, B * nh * N * sizeof(float));
+    cudaMalloc(&m, B * nh * N * sizeof(float));
+  }
 
   KernelArgs args {
       .Q = &Q,
@@ -195,8 +197,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   // std::endl; std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y
   // << std::endl; std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y
   // << ", " << gridDim.z << std::endl;
-
-  static_assert(DynamicTileSizeKernel<decltype(&naive_forward_kernel)> && "baaaaad");
 
   // launch kernel
   switch (kernelType) {
@@ -279,8 +279,11 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   }
   default: throw std::invalid_argument("Unsupported kernel type");
   }
-  cudaFree(l);
-  cudaFree(m);
+
+  if (kernelType != KernelType::mma_qreg) {
+    cudaFree(l);
+    cudaFree(m);
+  }
 
   gpuErrchk(cudaPeekAtLastError());
   gpuErrchk(cudaDeviceSynchronize());

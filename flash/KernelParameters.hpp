@@ -336,7 +336,7 @@ class MMAQregParameters : public KernelParametersBase {
       headDim(common::nextMultiple(headDim, 32))
   {}
 
-  static constexpr uint32_t rowsPerTileQ() { return 8 * mma::Tile::M; }
+  static constexpr uint32_t rowsPerTileQ() { return 8 * mma::Tile::M; } // 6 also works well
   static constexpr uint32_t rowsPerTileK() { return rowsPerTileQ() / 2; }
   static constexpr uint32_t warpsPerBlock() { return rowsPerTileQ() / mma::Tile::M; }
   dim3 tileSize() override { return dim3(rowsPerTileK(), rowsPerTileQ(), headDim); }

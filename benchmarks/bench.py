@@ -64,7 +64,6 @@ def profile_kernel(kernel, q, k, v, gpu_time_only):
         total_gpu_time_us = sum([item.self_device_time_total for item in prof.key_averages()])
         print("{}: {} ms".format(kernel.__name__, total_gpu_time_us / 1e3))
 
-profile_kernel(manual_attn, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.naive, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.scalar2d, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.scalar2d_row_tile, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
@@ -75,3 +74,6 @@ profile_kernel(pyflash.block_wmma_row_block, q, k, v, gpu_time_only=profiler_pri
 profile_kernel(pyflash.mma, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.mma_swizzle, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
 profile_kernel(pyflash.mma_qreg, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+profile_kernel(manual_attn, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
+torch_flash_v2 = F.scaled_dot_product_attention
+profile_kernel(torch_flash_v2, q, k, v, gpu_time_only=profiler_print_cuda_time_only)
