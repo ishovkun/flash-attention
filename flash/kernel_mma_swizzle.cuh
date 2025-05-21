@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <iostream>
 #include <mma.h>
 
 namespace flash {

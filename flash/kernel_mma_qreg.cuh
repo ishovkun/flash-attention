@@ -64,7 +64,6 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
 
   constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
   constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
-  // constexpr auto unswizzleFuncA = common::getUnskewCol<mma::Tile::M/2, mma::Tile::M/2>;
 
   float mprev[mma::FragmentAccumulator::numRowsPerThread];
   float lprev[mma::FragmentAccumulator::numRowsPerThread];
@@ -108,8 +107,6 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     }
 
     // load Kj, Vj
-    // Idea: first load K, then sync, then load Vj
-    // this way we can aboid a sync at the end of the loop
     for (int jj = warp; jj < Bc; jj += numWarps) {
       auto j = jStart + jj;
       for (int k = tx; k < dp; k += blockDim.x) {
@@ -120,6 +117,27 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       }
     }
     __syncthreads();
+
+    // This allows to remove __syncthreads at the end of the loop,
+    // but it actually makes the kernel slower :-(
+
+    // for (int jj = warp; jj < Bc; jj += numWarps) {
+    //   auto j = jStart + jj;
+    //   for (int k = tx; k < dp; k += blockDim.x) {
+    //     auto inBounds = jj < Bcc && k < d;
+    //     auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
+    //     _K[jj * dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
+    //   }
+    // }
+    // __syncthreads();
+    // for (int jj = warp; jj < Bc; jj += numWarps) {
+    //   auto j = jStart + jj;
+    //   for (int k = tx; k < dp; k += blockDim.x) {
+    //     auto inBounds = jj < Bcc && k < d;
+    //     auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
+    //     _V[jj * dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
+    //   }
+    // }
 
     // Compute Sij = Qij * Kj
     mma::FragmentB<mma::Layout::col_major> k_frag;
@@ -177,6 +195,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
       auto const frag_ii = subtileI * mma::Tile::M;
       auto const frag_k = subtileK * mma::Tile::N;
       fill_fragment(pv_frag, 0.f);
+
       for (uint32_t frag_jj = 0; frag_jj < Bc; frag_jj += mma::Tile::K) {
         mma::load_matrix_sync<swizzleFuncA>(p_frag, _S, frag_ii, frag_jj, Bc);
         mma::load_matrix_sync<swizzleFuncB>(v_frag, _V, frag_jj, frag_k, dp);

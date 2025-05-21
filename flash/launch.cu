@@ -107,7 +107,6 @@ concept StaticTileSizeKernelLocalLM = std::is_convertible_v<F, StaticTileSizeKer
 
 struct KernelArgs {
  torch::Tensor const *Q, *K, *V;
- float *l, *m;
  torch::Tensor *O;
  float softmax_scale;
  std::unique_ptr<KernelParametersBase> param;
@@ -138,6 +137,15 @@ void launchKernel(KernelArgs & args, auto &&kernel) {
     }
   }
 
+  float *l = nullptr, *m = nullptr;
+  if constexpr (!StaticTileSizeKernelLocalLM<decltype(kernel)>) {
+    auto const & Q = *args.Q;
+    const int B = Q.size(0);  // batch size
+    const int nh = Q.size(1); // number of heads
+    cudaMalloc(&l, B * nh * N * sizeof(float));
+    cudaMalloc(&m, B * nh * N * sizeof(float));
+  }
+
   auto const scale = args.softmax_scale;
   auto gridDim = args.param->gridDim();
   auto blockDim = args.param->blockDim();
@@ -145,12 +153,12 @@ void launchKernel(KernelArgs & args, auto &&kernel) {
     auto tileSize = args.param->tileSize();
     kernel<<<args.param->gridDim(), args.param->blockDim(), args.param->sramSize()>>>(
           args.Q->data_ptr<float>(), args.K->data_ptr<float>(), args.V->data_ptr<float>(), N, d,
-          tileSize.x, tileSize.y, scale, args.l, args.m, args.O->data_ptr<float>());
+          tileSize.x, tileSize.y, scale, l, m, args.O->data_ptr<float>());
   }
   else if constexpr (StaticTileSizeKernelGlobalLM<decltype(kernel)>) {
     kernel<<<gridDim, blockDim, args.param->sramSize()>>>(
         args.Q->data_ptr<float>(), args.K->data_ptr<float>(), args.V->data_ptr<float>(), N, d,
-        scale, args.l, args.m, args.O->data_ptr<float>());
+        scale, l, m, args.O->data_ptr<float>());
   }
   else if constexpr (StaticTileSizeKernelLocalLM<decltype(kernel)>) {
     kernel<<<gridDim, blockDim, args.param->sramSize()>>>(
@@ -160,6 +168,8 @@ void launchKernel(KernelArgs & args, auto &&kernel) {
   else {
     static_assert([] { return false; }(), "Unsupported kernel signature :-(");
   }
+  if (l) cudaFree(l);
+  if (m) cudaFree(m);
 }
 
 torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
@@ -174,18 +184,10 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   // Initialize O, l, m to HBM
   auto O = torch::zeros_like(Q);
 
-  float *l, *m;
-  if (kernelType != KernelType::mma_qreg) {
-    cudaMalloc(&l, B * nh * N * sizeof(float));
-    cudaMalloc(&m, B * nh * N * sizeof(float));
-  }
-
   KernelArgs args {
       .Q = &Q,
       .K = &K,
       .V = &V,
-      .l = l,
-      .m = m,
       .O = &O,
       .softmax_scale = softmax_scale,
       .param = KernelParametersFactory::create(B, nh, N, d, kernelType),
@@ -254,35 +256,24 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   }
   case KernelType::mma_qreg: {
-    constexpr auto Br = MMAQregParameters::rowsPerTileQ();
-    constexpr auto Bc = MMAQregParameters::rowsPerTileK();
     if (d % 2 != 0) {
       throw std::invalid_argument("Head dim must be even for kernel" + to_string(kernelType));
     }
     auto tile = args.param->tileSize();
-    std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
-              << tileSize.y  << " maxHeadDim = " << tileSize.z
-              << " and block size: " << blockDim.x << ", " << blockDim.y
-              << " for kernel type: " << to_string(kernelType) << std::endl;
-
-    if (constexpr uint32_t maxHeadDim = 128; tile.z == maxHeadDim)
-      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
-    else if (constexpr uint32_t maxHeadDim = 96; tile.z == maxHeadDim)
-      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
-    else if (constexpr uint32_t maxHeadDim = 64; tile.z == maxHeadDim)
-      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
-    else if (constexpr uint32_t maxHeadDim = 32; tile.z == maxHeadDim)
-      launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
-    else
-      unsupportedDimensions(tileSize, blockDim, kernelType);
+    constexpr auto validMaxHeadDim = std::integer_sequence<uint32_t, 32, 64, 96, 128>{};
+    bool launched = false;
+    static_for(validMaxHeadDim, [&](auto maxHeadDim) {
+      if (tileSize.z == maxHeadDim) {
+        constexpr auto Br = MMAQregParameters::rowsPerTileQ();
+        constexpr auto Bc = MMAQregParameters::rowsPerTileK();
+        launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
+        launched = true;
+      }
+    });
+    if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
     break;
   }
   default: throw std::invalid_argument("Unsupported kernel type");
-  }
-
-  if (kernelType != KernelType::mma_qreg) {
-    cudaFree(l);
-    cudaFree(m);
   }
 
   gpuErrchk(cudaPeekAtLastError());
