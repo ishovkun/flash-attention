@@ -3,6 +3,7 @@
 #include "kernel_mma.cuh"
 #include "kernel_mma_swizzle.cuh"
 #include "kernel_mma_qreg.cuh"
+#include "kernel_mma_qreg_f32x4load.cuh"
 #include "launch.hpp"
 #include "wmma.hpp"
 #include <iostream>
@@ -82,16 +83,24 @@ void unsupportedDimensions(dim3 tileDim, dim3 blockDim, KernelType kernel) {
   throw std::invalid_argument(err.str());
 }
 
+/*
+These crazy template thingies are needed in launch_kernel function
+to launch various kernels depending on the arumments that they take.
+*/
+
+// Naive kernel signature
 using DynamicTileSizeKernelSignature = void (*) (
   float const*, float const*, float const*,
   int, int, int, int, float,
   float*, float*, float*);
 
+// Faster kernels use static tile sized
 using StaticTileSizeKernelWithLMSignature = void (*) (
   float const*, float const*, float const*,
   int, int, float,
   float*, float*, float*);
 
+// Most optimized kenrle don't really need l and m parameters
 using StaticTileSizeKernelSignature = void (*) (
   float const*, float const*, float const*,
   int, int, float, float*);
@@ -267,6 +276,24 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
         constexpr auto Br = MMAQregParameters::rowsPerTileQ();
         constexpr auto Bc = MMAQregParameters::rowsPerTileK();
         launchKernel(args, kernel_mma_qreg<Br, Bc, maxHeadDim>);
+        launched = true;
+      }
+    });
+    if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
+    break;
+  }
+  case KernelType::mma_qreg_f32x4load: {
+    if (d % 2 != 0) {
+      throw std::invalid_argument("Head dim must be even for kernel" + to_string(kernelType));
+    }
+    auto tile = args.param->tileSize();
+    constexpr auto validMaxHeadDim = std::integer_sequence<uint32_t, 32, 64, 96, 128>{};
+    bool launched = false;
+    static_for(validMaxHeadDim, [&](auto maxHeadDim) {
+      if (tileSize.z == maxHeadDim) {
+        constexpr auto Br = MMAQregParameters::rowsPerTileQ();
+        constexpr auto Bc = MMAQregParameters::rowsPerTileK();
+        launchKernel(args, kernel_mma_qreg_f32x4load<Br, Bc, maxHeadDim>);
         launched = true;
       }
     });

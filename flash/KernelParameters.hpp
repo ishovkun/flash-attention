@@ -376,8 +376,10 @@ public:
       return std::make_unique<MMAParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::mma_swizzle:
       return std::make_unique<MMAParameters>(batchSize, numHeads, seqLen, headDim);
-      case KernelType::mma_qreg:
-        return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
+    case KernelType::mma_qreg:
+      return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
+    case KernelType::mma_qreg_f32x4load:
+      return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::block_wmma_async:
       return std::make_unique<BlockWMMAAsyncParameters>( batchSize, numHeads, seqLen, headDim);
     default: {

@@ -111,10 +111,14 @@ void test_alg(AttentionParameters const &params) {
   ret &= run_and_compare("Block wmma async", manual_result, atol, rtol, [&] {
     return flash::forward(q, k, v, flash::KernelType::block_wmma_async);
   });
-  if (params.head_embd % 2 == 0) {
-    // otherwise misaligned address
+  if (params.head_embd % 2 == 0) { // otherwise misaligned address
     ret &= run_and_compare("mma qreg", manual_result, atol, rtol, [&] {
       return flash::forward(q, k, v, flash::KernelType::mma_qreg);
+    });
+  }
+  if (params.head_embd % 4 == 0) { // otherwise misaligned address
+    ret &= run_and_compare("mma qreg vload", manual_result, atol, rtol, [&] {
+      return flash::forward(q, k, v, flash::KernelType::mma_qreg_f32x4load);
     });
   }
   if (!ret) {
@@ -208,6 +212,7 @@ auto main(int argc, char *argv[]) -> int {
     time_kernel(q, k, v, flash::KernelType::mma);
     time_kernel(q, k, v, flash::KernelType::mma_swizzle);
     time_kernel(q, k, v, flash::KernelType::mma_qreg);
+    time_kernel(q, k, v, flash::KernelType::mma_qreg_f32x4load);
     // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
 
     time_kernel(q, k, v, "manual attention", manual_attn);

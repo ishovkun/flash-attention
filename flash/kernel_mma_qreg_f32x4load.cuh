@@ -15,13 +15,13 @@ namespace flash {
  */
 template <uint32_t Br, uint32_t Bc, uint32_t maxHeadDim>
 __global__ void
-kernel_mma_qreg(float const *__restrict__ Q, // query vector
-                float const *__restrict__ K, // key vector
-                float const *__restrict__ V, // value vector
-                int seq_length,              // sequence length
-                int d,                       // head_dim
-                float softmax_scale,         // 1/sqrt(d)
-                float *__restrict__ O)       // output attention
+kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
+                          float const *__restrict__ K, // key vector
+                          float const *__restrict__ V, // value vector
+                              int seq_length,              // sequence length
+                              int d,                       // head_dim
+                              float softmax_scale,         // 1/sqrt(d)
+                              float *__restrict__ O)       // output attention
 {
   constexpr uint32_t numWarps = Br / mma::Tile::M;
   assert(d % 2 == 0 && "head_dim must be even for aligned vectorized stores");
@@ -64,6 +64,8 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
 
   constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
   constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
+  // constexpr auto swizzleFuncA = mma::returnColumn;
+  // constexpr auto swizzleFuncB = mma::returnColumn;
 
   float mprev[mma::FragmentAccumulator::numRowsPerThread];
   float lprev[mma::FragmentAccumulator::numRowsPerThread];
@@ -78,12 +80,17 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
   // Load Q tile
   auto iiStart = subtileI * mma::Tile::M;
   auto iiEnd = min((subtileI + 1) * mma::Tile::M, Brc);
-  for (uint32_t ii = iiStart; ii < iiEnd; ii++) {
+  for (auto ii = iiStart; ii < iiEnd; ii++) {
     auto i = iStart + ii;
-    for (uint32_t k = tx; k < maxHeadDim; k += warpSize) {
+    for (uint32_t k = 4*tx; k < maxHeadDim; k += 4*warpSize) {
       auto inBounds = k < d;
-      auto k_sw = swizzleFuncA(ii, k, dp);
-      _Q[ii * dp + k_sw] = inBounds ? Q[qkv_offset + i * d + k] : 0.f;
+      auto const *Q4 = reinterpret_cast<float4 const*>(&Q[qkv_offset + i * d + k]);
+      float4 q4 = inBounds ? *Q4 : make_float4(0.f, 0.f, 0.f, 0.f);
+      auto *q1 = reinterpret_cast<float*>(&q4);
+      for (int r = 0; r < 4; r++) {
+        auto k_sw = swizzleFuncA(ii, k + r, dp);
+        _Q[ii * dp + k_sw] = q1[r];
+      }
     }
   }
 
@@ -109,11 +116,25 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
     // load Kj, Vj
     for (int jj = warp; jj < Bc; jj += numWarps) {
       auto j = jStart + jj;
-      for (int k = tx; k < dp; k += blockDim.x) {
-        auto inBounds = jj < Bcc && k < d;
-        auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
-        _K[jj * dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
-        _V[jj * dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
+      // for (int k = tx; k < dp; k += blockDim.x) {
+      //   auto inBounds = jj < Bcc && k < d;
+      //   auto k_sw = swizzleFuncB(jj, k, dp); // swizzle column
+      //   _K[jj * dp + k_sw] = inBounds ? K[qkv_offset + j * d + k] : 0.f;
+      //   _V[jj * dp + k_sw] = inBounds ? V[qkv_offset + j * d + k] : 0.f;
+      // }
+      for (uint32_t k = 4*tx; k < maxHeadDim; k += 4*warpSize) {
+        auto inBounds = k < d;
+        auto const *K4 = reinterpret_cast<float4 const*>(&K[qkv_offset + j * d + k]);
+        auto const *V4 = reinterpret_cast<float4 const*>(&V[qkv_offset + j * d + k]);
+        float4 k4 = inBounds ? *K4 : make_float4(0.f, 0.f, 0.f, 0.f);
+        float4 v4 = inBounds ? *V4 : make_float4(0.f, 0.f, 0.f, 0.f);
+        auto *k1 = reinterpret_cast<float*>(&k4);
+        auto *v1 = reinterpret_cast<float*>(&v4);
+        for (int r = 0; r < 4; r++) {
+          auto k_sw = swizzleFuncB(jj, k + r, dp);
+          _K[jj * dp + k_sw] = k1[r];
+          _V[jj * dp + k_sw] = v1[r];
+        }
       }
     }
     __syncthreads();
@@ -240,7 +261,7 @@ kernel_mma_qreg(float const *__restrict__ Q, // query vector
         if (ii < Brc) {
           if (k + 1 < d) {
             auto *dst = reinterpret_cast<float2*>(&O[qkv_offset + i * d + k]);
-            auto const *src = reinterpret_cast<float2 const*>(&rO[r]);
+            auto const *src = reinterpret_cast<float2*>(&rO[r]);
             *dst = *src;
           }
           else if (k < d) {
