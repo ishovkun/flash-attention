@@ -1,12 +1,14 @@
 # flash-attention
 
-This is a fork of [flash-attention-minimal](https://github.com/tspeterkim/flash-attention-minimal).
+This is an implementation of the Flash attention V2 in raw CUDA without any libraries (e.g. Cutlass).
+This started as fork of [flash-attention-minimal](https://github.com/tspeterkim/flash-attention-minimal),
+and I was wondering how far I could get this (see the benchmark below).
 
-I am rewriting their kernels and add robustnest / performance.
-
-- The variable names follow the notations from the original [paper](https://arxiv.org/abs/2205.14135).
+The code is organized as multiple kernels, each representing a separate optimization step.
+Therefore, it might serve as an educational source (see [Implemented Kernels](#implemented-kernels).
 
 ## Benchmark
+This is the benchmark on the parameters of a transformer from GPT-3.
 ![scalability image](img/scalability.png "scalability")
 
 ## Build Instructions
@@ -54,27 +56,5 @@ make -j
 python ../benchmarks/bench.py
 ```
 
-## Results
-manual_attn: 81.118 ms
-naive: 3384.737 ms
-scalar2d: 1748.492 ms
-scalar2d_row_tile: 1575.13 ms
-warp_wmma: 575.171 ms
-block_wmma: 260.718 ms
-block_wmma_row_block: 293.289 ms
-block_wmma_async: 260.774 ms
-
-
-## Benchmark
-Benchmark 'block_wmma' took 254 [ms]
-Benchmark 'wmma_row_block' took 152 [ms]
-Benchmark 'mma' took 158 [ms]
-Benchmark 'mma_swizzle' took 121 [ms]
-
-## Benchmark May 14 11.19 AM
-12 warps per block
-Generate sample: Batch 4 Num Heads 96 Seq len 2048 Head embedding 128
-Benchmark 'block_wmma' took 255 [ms]
-Benchmark 'wmma_row_block' took 152 [ms]
-Benchmark 'mma' took 180 [ms]
-Benchmark 'mma_swizzle' took 107 [ms]
+## Implemented Kernels
+- `flash_naive`: This code is an implementation from [flash-attention-minimal](https://github.com/tspeterkim/flash-attention-minimal). It does many things wrong, e.g. non-coalesced memory loads.
