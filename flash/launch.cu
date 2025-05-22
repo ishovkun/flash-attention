@@ -4,6 +4,7 @@
 #include "kernel_mma_swizzle.cuh"
 #include "kernel_mma_qreg.cuh"
 #include "kernel_mma_qreg_f32x4load.cuh"
+#include "kernel_mma_qreg_async.cuh"
 #include "launch.hpp"
 #include "wmma.hpp"
 #include <iostream>
@@ -203,11 +204,13 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
   };
   auto const tileSize = args.param->tileSize();
   auto const blockDim = args.param->blockDim();
+  auto const gridDim = args.param->gridDim();
 
-  // std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y <<
-  // std::endl; std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y
-  // << std::endl; std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y
-  // << ", " << gridDim.z << std::endl;
+  // std::cout << "\nKernel name: " << to_string(kernelType) << std::endl;
+  // std::cout << "Tile size: " << tileSize.x << ", " << tileSize.y << ", " << tileSize.z << std::endl;
+  // std::cout << "Block dim: " << blockDim.x << ", " << blockDim.y << std::endl;
+  // std::cout << "Grid dim: " << gridDim.x << ", " << gridDim.y << ", " << gridDim.z << std::endl;
+  // std::cout << "shmem/cta " << args.param->sramSize() / 1024. << " KiB" << std::endl;
 
   // launch kernel
   switch (kernelType) {
@@ -234,10 +237,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   case KernelType::mma: {
     constexpr auto validRowsPerTileK = std::integer_sequence<uint32_t, 16, 32, 48, 56, 72, 96, 112>{};
-    std::cout << "launching : " << "tile size: Bc =" << tileSize.x << ", Br = "
-              << tileSize.y << " and block size: " << blockDim.x << ", " << blockDim.y
-              << " for kernel type: " << to_string(kernelType) << std::endl;
-
     bool launched = false;
     static_for(validRowsPerTileK, [&](auto rowsPerTileK) {
       if (tileSize.x == rowsPerTileK) {
@@ -268,7 +267,6 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     if (d % 2 != 0) {
       throw std::invalid_argument("Head dim must be even for kernel" + to_string(kernelType));
     }
-    auto tile = args.param->tileSize();
     constexpr auto validMaxHeadDim = std::integer_sequence<uint32_t, 32, 64, 96, 128>{};
     bool launched = false;
     static_for(validMaxHeadDim, [&](auto maxHeadDim) {
@@ -283,10 +281,9 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     break;
   }
   case KernelType::mma_qreg_f32x4load: {
-    if (d % 2 != 0) {
-      throw std::invalid_argument("Head dim must be even for kernel" + to_string(kernelType));
+    if (d % 4 != 0) {
+      throw std::invalid_argument("Head dim must be a multiple of 4 for kernel" + to_string(kernelType));
     }
-    auto tile = args.param->tileSize();
     constexpr auto validMaxHeadDim = std::integer_sequence<uint32_t, 32, 64, 96, 128>{};
     bool launched = false;
     static_for(validMaxHeadDim, [&](auto maxHeadDim) {
@@ -294,6 +291,23 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
         constexpr auto Br = MMAQregParameters::rowsPerTileQ();
         constexpr auto Bc = MMAQregParameters::rowsPerTileK();
         launchKernel(args, kernel_mma_qreg_f32x4load<Br, Bc, maxHeadDim>);
+        launched = true;
+      }
+    });
+    if (!launched)  { unsupportedDimensions(tileSize, blockDim, kernelType); }
+    break;
+  }
+  case KernelType::mma_qreg_async: {
+    if (d % 4 != 0) {
+      throw std::invalid_argument("Head dim must be a multiple of 4 for kernel" + to_string(kernelType));
+    }
+    constexpr auto validMaxHeadDim = std::integer_sequence<uint32_t, 32, 64, 96, 128>{};
+    bool launched = false;
+    static_for(validMaxHeadDim, [&](auto maxHeadDim) {
+      if (tileSize.z == maxHeadDim) {
+        constexpr auto Br = MMAQregParameters::rowsPerTileQ();
+        constexpr auto Bc = MMAQregParameters::rowsPerTileK();
+        launchKernel(args, kernel_mma_qreg_async<Br, Bc, maxHeadDim>);
         launched = true;
       }
     });

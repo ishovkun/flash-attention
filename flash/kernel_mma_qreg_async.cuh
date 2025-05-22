@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cuda.h>
+#include <cuda/barrier>
 #include <cuda_runtime.h>
 #include <iostream>
 #include <mma.h>
@@ -15,13 +16,13 @@ namespace flash {
  */
 template <uint32_t Br, uint32_t Bc, uint32_t maxHeadDim>
 __global__ void
-kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
-                          float const *__restrict__ K, // key vector
-                          float const *__restrict__ V, // value vector
-                          int seq_length,              // sequence length
-                          int d,                       // head_dim
-                          float softmax_scale,         // 1/sqrt(d)
-                          float *__restrict__ O)       // output attention
+kernel_mma_qreg_async(float const *__restrict__ Q, // query vector
+                      float const *__restrict__ K, // key vector
+                      float const *__restrict__ V, // value vector
+                      int seq_length,              // sequence length
+                      int d,                       // head_dim
+                      float softmax_scale,         // 1/sqrt(d)
+                      float *__restrict__ O)       // output attention
 {
   constexpr uint32_t numWarps = Br / mma::Tile::M;
   assert(d % 2 == 0 && "head_dim must be even for aligned vectorized stores");
@@ -47,6 +48,8 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
   float *_K = sram;                        // size = Bc * dp
   float *_V = &sram[dp * Bc];              // size = Bc x dp
   float *_S = &sram[dp * max(2 * Bc, Br)]; // size = Br x Bc
+  auto *barrier_pos = &sram[dp * max(2 * Bc, Br) + Br * Bc];
+  auto &bar = *reinterpret_cast<cuda::barrier<cuda::thread_scope_block>*>(barrier_pos);
 
   auto const tx = threadIdx.x;
   auto const ty = threadIdx.y;
@@ -62,10 +65,8 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
 
   const auto subtileI = warp;
 
-  constexpr auto swizzleFuncA =
-      common::getSkewCol<mma::Tile::M / 2, mma::Tile::M / 2>;
-  constexpr auto swizzleFuncB =
-      common::getSkewCol<mma::Tile::N, mma::Tile::N / 2>;
+  constexpr auto swizzleFuncA = common::getSkewCol<mma::Tile::M/2, mma::Tile::M/2>;
+  constexpr auto swizzleFuncB = common::getSkewCol<mma::Tile::N, mma::Tile::N/2>;
 
   float mprev[mma::FragmentAccumulator::numRowsPerThread];
   float lprev[mma::FragmentAccumulator::numRowsPerThread];
@@ -77,17 +78,22 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
   float mcur[2];
   float lcur[2];
 
+  if (tx == 0 && ty == 0) {
+    init(&bar, numWarps * common::warpSize);
+  }
+
+
+
   // Load Q tile
   auto iiStart = subtileI * mma::Tile::M;
   auto iiEnd = min((subtileI + 1) * mma::Tile::M, Brc);
   for (auto ii = iiStart; ii < iiEnd; ii++) {
     auto i = iStart + ii;
-    for (uint32_t k = 4 * tx; k < maxHeadDim; k += 4 * warpSize) {
+    for (uint32_t k = 4*tx; k < maxHeadDim; k += 4*warpSize) {
       auto inBounds = k < d;
-      auto const *Q4 =
-          reinterpret_cast<float4 const *>(&Q[qkv_offset + i * d + k]);
+      auto const *Q4 = reinterpret_cast<float4 const*>(&Q[qkv_offset + i * d + k]);
       float4 q4 = inBounds ? *Q4 : make_float4(0.f, 0.f, 0.f, 0.f);
-      auto *q1 = reinterpret_cast<float *>(&q4);
+      auto *q1 = reinterpret_cast<float*>(&q4);
       for (int r = 0; r < 4; r++) {
         auto k_sw = swizzleFuncA(ii, k + r, dp);
         _Q[ii * dp + k_sw] = q1[r];
@@ -117,24 +123,26 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
     // load Kj, Vj
     for (int jj = warp; jj < Bc; jj += numWarps) {
       auto j = jStart + jj;
-      for (uint32_t k = 4 * tx; k < maxHeadDim; k += 4 * warpSize) {
-        auto inBounds = k < d;
-        auto const *K4 =
-            reinterpret_cast<float4 const *>(&K[qkv_offset + j * d + k]);
-        auto const *V4 =
-            reinterpret_cast<float4 const *>(&V[qkv_offset + j * d + k]);
-        float4 k4 = inBounds ? *K4 : make_float4(0.f, 0.f, 0.f, 0.f);
-        float4 v4 = inBounds ? *V4 : make_float4(0.f, 0.f, 0.f, 0.f);
-        auto *k1 = reinterpret_cast<float *>(&k4);
-        auto *v1 = reinterpret_cast<float *>(&v4);
-        for (int r = 0; r < 4; r++) {
-          auto k_sw = swizzleFuncB(jj, k + r, dp);
-          _K[jj * dp + k_sw] = k1[r];
-          _V[jj * dp + k_sw] = v1[r];
-        }
+      for (uint32_t k = 4*tx; k < maxHeadDim; k += 4*warpSize) {
+        auto k_sw = swizzleFuncB(jj, k, dp);
+        cuda::memcpy_async(&_K[jj*dp + k_sw], &K[qkv_offset + j*d + k], cuda::aligned_size_t<16>(sizeof(float4)), bar);
+        cuda::memcpy_async(&_V[jj*dp + k_sw], &V[qkv_offset + j*d + k], cuda::aligned_size_t<16>(sizeof(float4)), bar);
+
+        // auto const *K4 = reinterpret_cast<float4 const*>(&K[qkv_offset + j * d + k]);
+        // auto const *V4 = reinterpret_cast<float4 const*>(&V[qkv_offset + j * d + k]);
+        // float4 k4 = inBounds ? *K4 : make_float4(0.f, 0.f, 0.f, 0.f);
+        // float4 v4 = inBounds ? *V4 : make_float4(0.f, 0.f, 0.f, 0.f);
+        // auto *k1 = reinterpret_cast<float*>(&k4);
+        // auto *v1 = reinterpret_cast<float*>(&v4);
+        // for (int r = 0; r < 4; r++) {
+        //   auto k_sw = swizzleFuncB(jj, k + r, dp);
+        //   _K[jj * dp + k_sw] = k1[r];
+        //   _V[jj * dp + k_sw] = v1[r];
+        // }
       }
     }
-    __syncthreads();
+    // __syncthreads();
+    bar.arrive_and_wait();
 
     // This allows to remove __syncthreads at the end of the loop,
     // but it actually makes the kernel slower :-(
@@ -230,9 +238,8 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
         auto i = iStart + ii;
         auto k = frag_k + fragCol;
         if (ii < Brc && k < d) {
-          auto const *src =
-              reinterpret_cast<float2 const *>(&O[qkv_offset + i * d + k]);
-          auto *dst = reinterpret_cast<float2 *>(&rO[r]);
+          auto const *src = reinterpret_cast<float2 const*>(&O[qkv_offset + i * d + k]);
+          auto *dst = reinterpret_cast<float2*>(&rO[r]);
           *dst = *src;
         }
       }
@@ -247,8 +254,8 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
         auto const row_l_new = __expf(row_m_prev - row_m_new) * row_l_prev +
                                __expf(row_m - row_m_new) * row_l;
         rO[r] = ((row_l_prev * __expf(row_m_prev - row_m_new) * rO[r]) +
-                 (__expf(row_m - row_m_new) * PVik)) /
-                row_l_new;
+              (__expf(row_m - row_m_new) * PVik)) /
+              row_l_new;
       }
       for (auto r = 0; r < pv_frag.registersPerThread; r += 2) {
         auto fragRow = mma::FragmentAccumulator::threadRow(r);
@@ -258,11 +265,12 @@ kernel_mma_qreg_f32x4load(float const *__restrict__ Q, // query vector
         auto k = frag_k + fragCol;
         if (ii < Brc) {
           if (k + 1 < d) {
-            auto *dst = reinterpret_cast<float2 *>(&O[qkv_offset + i * d + k]);
-            auto const *src = reinterpret_cast<float2 *>(&rO[r]);
+            auto *dst = reinterpret_cast<float2*>(&O[qkv_offset + i * d + k]);
+            auto const *src = reinterpret_cast<float2*>(&rO[r]);
             *dst = *src;
-          } else if (k < d) {
-            O[qkv_offset + i * d + k] = rO[r];
+          }
+          else if (k < d) {
+           O[qkv_offset + i * d + k] = rO[r];
           }
         }
       }

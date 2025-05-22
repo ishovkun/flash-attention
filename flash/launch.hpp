@@ -16,6 +16,7 @@ enum class KernelType {
   mma_swizzle,
   mma_qreg,
   mma_qreg_f32x4load,
+  mma_qreg_async,
 };
 
 
@@ -39,6 +40,7 @@ inline std::string to_string(flash::KernelType type)
     case mma_swizzle: return "mma_swizzle";
     case mma_qreg: return "mma_qreg";
     case mma_qreg_f32x4load: return "mma_qreg_f32x4load";
+    case mma_qreg_async: return "mma_qreg_async";
     default: throw std::invalid_argument("wrong kernel type");
   }
 }

@@ -6,6 +6,9 @@ I am rewriting their kernels and add robustnest / performance.
 
 - The variable names follow the notations from the original [paper](https://arxiv.org/abs/2205.14135).
 
+## Benchmark
+![scalability image](img/scalability.png "scalability")
+
 ## Build Instructions
 
 - Install CUDA Toolkit (I used 12.8).
@@ -50,3 +53,28 @@ make -j
 ```bash
 python ../benchmarks/bench.py
 ```
+
+## Results
+manual_attn: 81.118 ms
+naive: 3384.737 ms
+scalar2d: 1748.492 ms
+scalar2d_row_tile: 1575.13 ms
+warp_wmma: 575.171 ms
+block_wmma: 260.718 ms
+block_wmma_row_block: 293.289 ms
+block_wmma_async: 260.774 ms
+
+
+## Benchmark
+Benchmark 'block_wmma' took 254 [ms]
+Benchmark 'wmma_row_block' took 152 [ms]
+Benchmark 'mma' took 158 [ms]
+Benchmark 'mma_swizzle' took 121 [ms]
+
+## Benchmark May 14 11.19 AM
+12 warps per block
+Generate sample: Batch 4 Num Heads 96 Seq len 2048 Head embedding 128
+Benchmark 'block_wmma' took 255 [ms]
+Benchmark 'wmma_row_block' took 152 [ms]
+Benchmark 'mma' took 180 [ms]
+Benchmark 'mma_swizzle' took 107 [ms]

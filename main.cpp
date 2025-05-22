@@ -120,6 +120,9 @@ void test_alg(AttentionParameters const &params) {
     ret &= run_and_compare("mma qreg vload", manual_result, atol, rtol, [&] {
       return flash::forward(q, k, v, flash::KernelType::mma_qreg_f32x4load);
     });
+    ret &= run_and_compare("mma qreg async", manual_result, atol, rtol, [&] {
+      return flash::forward(q, k, v, flash::KernelType::mma_qreg_async);
+    });
   }
   if (!ret) {
     std::cout << "Test failed!" << std::endl;
@@ -189,7 +192,8 @@ auto main(int argc, char *argv[]) -> int {
         .head_embd = 128,
     });
   }
-  else { // profile
+  else { // profile or benchmark
+    bool ncu = argv[1] == std::string("ncu");
     auto [q, k, v] = generate_data(AttentionParameters{
             // gpt3
             .batch_size = 4,
@@ -203,20 +207,26 @@ auto main(int argc, char *argv[]) -> int {
             // .head_embd = 64,
         });
 
-    // time_kernel(q, k, v, flash::KernelType::naive1D);
-    // time_kernel(q, k, v, flash::KernelType::scalar2D);
-    // time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
-    // time_kernel(q, k, v, flash::KernelType::warp_wmma);
-    // time_kernel(q, k, v, flash::KernelType::block_wmma);
-    time_kernel(q, k, v, flash::KernelType::wmma_row_block);
-    time_kernel(q, k, v, flash::KernelType::mma);
-    time_kernel(q, k, v, flash::KernelType::mma_swizzle);
+    if (!ncu) {
+      time_kernel(q, k, v, flash::KernelType::naive1D);
+      time_kernel(q, k, v, flash::KernelType::scalar2D);
+      time_kernel(q, k, v, flash::KernelType::scalar2D_row_tile);
+      time_kernel(q, k, v, flash::KernelType::warp_wmma);
+      time_kernel(q, k, v, flash::KernelType::block_wmma);
+      time_kernel(q, k, v, flash::KernelType::wmma_row_block);
+      time_kernel(q, k, v, flash::KernelType::mma);
+      time_kernel(q, k, v, flash::KernelType::mma_swizzle);
+    }
+
     time_kernel(q, k, v, flash::KernelType::mma_qreg);
     time_kernel(q, k, v, flash::KernelType::mma_qreg_f32x4load);
-    // time_kernel(q, k, v, flash::KernelType::block_wmma_async);
+    time_kernel(q, k, v, flash::KernelType::mma_qreg_async);
 
-    time_kernel(q, k, v, "manual attention", manual_attn);
-    time_kernel(q, k, v, "torch attention v2", torch_attn2);
+    if (!ncu) {
+      time_kernel(q, k, v, flash::KernelType::block_wmma_async);
+      time_kernel(q, k, v, "manual attention", manual_attn);
+      time_kernel(q, k, v, "torch attention v2", torch_attn2);
+    }
   }
 
   return EXIT_SUCCESS;

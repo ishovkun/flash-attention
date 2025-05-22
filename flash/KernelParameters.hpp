@@ -3,6 +3,7 @@
 #include "launch.hpp"
 #include "mma.hpp"
 #include "wmma.hpp"
+#include <cuda/barrier>
 #include <cmath>
 #include <stdexcept>
 
@@ -353,6 +354,32 @@ class MMAQregParameters : public KernelParametersBase {
   }
 };
 
+class MMAQregAsyncParameters : public KernelParametersBase {
+  uint batchSize, numHeads, seqLen, headDim;
+ public:
+  MMAQregAsyncParameters(int batchSize, int numHeads, int seqLen, int headDim)
+    : batchSize(batchSize), numHeads(numHeads), seqLen(seqLen),
+      headDim(common::nextMultiple(headDim, 32))
+  {}
+
+  static constexpr uint32_t rowsPerTileQ() { return 8 * mma::Tile::M; } // 6 also works well
+  static constexpr uint32_t rowsPerTileK() { return rowsPerTileQ() / 2; }
+  static constexpr uint32_t warpsPerBlock() { return rowsPerTileQ() / mma::Tile::M; }
+  dim3 tileSize() override { return dim3(rowsPerTileK(), rowsPerTileQ(), headDim); }
+  uint32_t sramSize() override {
+    auto tile = tileSize();
+    auto Br = tile.y;
+    auto Bc = tile.x;
+    auto barrier_size = sizeof(cuda::barrier<cuda::thread_scope_block>);
+    return sizeof(float)*(max(Br, 2*Bc)*headDim + Br*Bc + barrier_size);
+  }
+  dim3 blockDim() override { return dim3(common::warpSize, warpsPerBlock()); }
+  dim3 gridDim() override {
+    uint blocksPerHead = common::ceil_div(seqLen, tileSize().y);
+    return {batchSize, numHeads, blocksPerHead};
+  }
+};
+
 class KernelParametersFactory {
 public:
   static std::unique_ptr<KernelParametersBase> create(int batchSize, int numHeads, int seqLen, int headDim, KernelType kernelType) {
@@ -380,6 +407,8 @@ public:
       return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::mma_qreg_f32x4load:
       return std::make_unique<MMAQregParameters>(batchSize, numHeads, seqLen, headDim);
+    case KernelType::mma_qreg_async:
+      return std::make_unique<MMAQregAsyncParameters>(batchSize, numHeads, seqLen, headDim);
     case KernelType::block_wmma_async:
       return std::make_unique<BlockWMMAAsyncParameters>( batchSize, numHeads, seqLen, headDim);
     default: {
